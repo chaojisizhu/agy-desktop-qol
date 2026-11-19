@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "agy-desktop-qol": {
+      "command": "node",
+      "args": ["${AGY_PLUGIN_ROOT}/agy-desktop-qol.mjs", "--watch"]
+    }
+  }
+}
