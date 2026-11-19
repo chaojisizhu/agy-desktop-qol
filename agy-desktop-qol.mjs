@@ -37,13 +37,103 @@ const MIME_MAP = {
   '.svg': 'image/svg+xml',
 };
 
+const DEFAULT_LANG = (process.env.LC_ALL || process.env.LANG || '').toLowerCase().startsWith('zh')
+  ? 'zh'
+  : 'en';
+
 const DEFAULT_CONFIG = {
+  lang: DEFAULT_LANG,
   enableWallpaper: true,
   imagePath: '',
   opacity: 0.12,
   enableInputStyle: true,
   enableStatsBar: true,
 };
+
+const I18N = {
+  zh: {
+    title: '=== Antigravity Desktop 外观配置 (CDP 零修改注入) ===',
+    cdpPort: 'CDP 端口',
+    configFile: '配置文件',
+    langLabel: '语言 / Language: 中文 (按 Enter 切换)',
+    enableWallpaper: '启用注入背景',
+    imagePath: '背景图片路径',
+    unset: '(未设置)',
+    opacity: '背景透明度',
+    enableFlat: '启用样式扁平化 (全局去阴影叠加 + 极简细边框)',
+    enableStats: '启用底部会话统计栏 (轮数/步数 · tok/s · 缓存命中率)',
+    apply: '▶ 应用配置并注入到 Antigravity Desktop',
+    clearAll: '✕ 清除所有注入样式 (恢复原生)',
+    quit: '退出',
+    hint: '使用 ↑/↓ 选择，Space/Enter 切换或编辑，q 退出',
+    promptImg: '请输入背景图片路径',
+    promptOpacity: '请输入透明度 (0.0 ~ 1.0)',
+    warnOpacity: '[warn] 透明度必须是数字',
+    injecting: '[info] 正在注入...',
+    applied: (n) => `[ok] 已成功应用配置到 ${n} 个窗口`,
+    clearedAll: (n) => `[ok] 已清除 ${n} 个窗口的所有注入样式`,
+    bar: {
+      waiting: '会话统计: 等待对话...',
+      disconnected: '会话统计: 本地服务未连接',
+      turns: '轮',
+      steps: '步',
+      cacheHit: '缓存命中',
+      openContext: '点击打开 Context 面板',
+      popTitle: '会话统计',
+      modelTime: '模型用时',
+      tps: '输出速度 (TPS)',
+      outTok: '输出 Token',
+      totTok: '总 Token',
+      cacheRate: '缓存命中率',
+      ctxUsage: '上下文占用',
+      min: '分',
+      sec: '秒',
+    },
+  },
+  en: {
+    title: '=== Antigravity Desktop QoL Config (Zero-Mod CDP) ===',
+    cdpPort: 'CDP Port',
+    configFile: 'Config',
+    langLabel: 'Language / 语言: English (Enter to switch)',
+    enableWallpaper: 'Enable Custom Wallpaper',
+    imagePath: 'Wallpaper Path',
+    unset: '(not set)',
+    opacity: 'Wallpaper Opacity',
+    enableFlat: 'Enable Style Flattening (No Shadows + Hairline Borders)',
+    enableStats: 'Enable Bottom Stats Bar (Turns/Steps · tok/s · Cache Hit)',
+    apply: '▶ Apply & Inject into Antigravity Desktop',
+    clearAll: '✕ Clear All Injected Styles (Restore Default)',
+    quit: 'Quit',
+    hint: 'Use ↑/↓ to move, Space/Enter to toggle/edit, q to quit',
+    promptImg: 'Enter wallpaper image path',
+    promptOpacity: 'Enter opacity (0.0 ~ 1.0)',
+    warnOpacity: '[warn] Opacity must be a number',
+    injecting: '[info] Injecting...',
+    applied: (n) => `[ok] Applied config to ${n} window(s)`,
+    clearedAll: (n) => `[ok] Cleared all injected styles from ${n} window(s)`,
+    bar: {
+      waiting: 'Session Stats: Waiting for chat...',
+      disconnected: 'Session Stats: Local server disconnected',
+      turns: 'turns',
+      steps: 'steps',
+      cacheHit: 'Cache',
+      openContext: 'Click to open Context panel',
+      popTitle: 'Session Stats',
+      modelTime: 'Model Time',
+      tps: 'Output Speed (TPS)',
+      outTok: 'Output Tokens',
+      totTok: 'Total Tokens',
+      cacheRate: 'Cache Hit Rate',
+      ctxUsage: 'Context Usage',
+      min: 'm',
+      sec: 's',
+    },
+  },
+};
+
+function t(cfg) {
+  return I18N[cfg?.lang === 'en' ? 'en' : 'zh'];
+}
 
 function loadConfig() {
   try {
@@ -294,8 +384,10 @@ function ensureStatsServer() {
   server.listen(STATS_PORT, '127.0.0.1');
 }
 
-function buildStatsBarInjectJS() {
+function buildStatsBarInjectJS(lang = 'zh') {
+  const L = JSON.stringify(I18N[lang === 'en' ? 'en' : 'zh'].bar);
   return `(() => {
+    const L = ${L};
     if (window.__agyStatsTimer) clearInterval(window.__agyStatsTimer);
     const old = document.getElementById('agy-stats-bar');
     if (old) old.remove();
@@ -307,10 +399,10 @@ function buildStatsBarInjectJS() {
     };
 
     const formatDuration = (sec) => {
-      if (!sec) return '0 秒';
+      if (!sec) return '0 ' + L.sec;
       const m = Math.floor(sec / 60);
       const s = sec % 60;
-      return m > 0 ? m + ' 分 ' + s + ' 秒' : s + ' 秒';
+      return m > 0 ? m + ' ' + L.min + ' ' + s + ' ' + L.sec : s + ' ' + L.sec;
     };
 
     const ensureBar = () => {
@@ -340,7 +432,7 @@ function buildStatsBarInjectJS() {
       if (!bar) return;
       const m = location.pathname.match(/\\/c\\/([a-zA-Z0-9_-]+)/);
       if (!m) {
-        bar.textContent = '会话统计: 等待对话...';
+        bar.textContent = L.waiting;
         return;
       }
       try {
@@ -369,13 +461,13 @@ function buildStatsBarInjectJS() {
             '<span style="font-variant-numeric:tabular-nums;">' + v + '</span></div>';
           pop.innerHTML =
             '<div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:8px;margin-bottom:6px;border-bottom:1px solid rgba(255,255,255,0.1);font-weight:600;">' +
-            '<span style="display:inline-flex;align-items:center;gap:6px;">' + gaugeSvg + '会话统计</span><span>' + d.turns + ' 轮 ' + d.steps + ' 步</span></div>' +
-            row('模型用时', formatDuration(d.modelSeconds)) +
-            row('输出速度 (TPS)', (d.tps || '--') + ' tok/s') +
-            row('输出 Token', formatTok(d.outputTokens)) +
-            row('总 Token', formatTok(d.totalTokens)) +
-            row('缓存命中率', d.cacheHitRate + '%') +
-            row('上下文占用', formatTok(d.lastContextTokens || 0) + ' / ' + formatTok(d.maxContext || 512000) + ' (' + pct + '%)');
+            '<span style="display:inline-flex;align-items:center;gap:6px;">' + gaugeSvg + L.popTitle + '</span><span>' + d.turns + ' ' + L.turns + ' ' + d.steps + ' ' + L.steps + '</span></div>' +
+            row(L.modelTime, formatDuration(d.modelSeconds)) +
+            row(L.tps, (d.tps || '--') + ' tok/s') +
+            row(L.outTok, formatTok(d.outputTokens)) +
+            row(L.totTok, formatTok(d.totalTokens)) +
+            row(L.cacheRate, d.cacheHitRate + '%') +
+            row(L.ctxUsage, formatTok(d.lastContextTokens || 0) + ' / ' + formatTok(d.maxContext || 512000) + ' (' + pct + '%)');
         }
         let summary = document.getElementById('agy-stats-summary');
         if (!summary) {
@@ -385,11 +477,11 @@ function buildStatsBarInjectJS() {
           bar.appendChild(summary);
         }
         summary.innerHTML =
-          '<span style="display:inline-flex;align-items:center;gap:5px;">' + gaugeSvg + d.turns + ' 轮 ' + d.steps + ' 步 · ' + (d.tps || '--') + ' tok/s</span>' +
+          '<span style="display:inline-flex;align-items:center;gap:5px;">' + gaugeSvg + d.turns + ' ' + L.turns + ' ' + d.steps + ' ' + L.steps + ' · ' + (d.tps || '--') + ' tok/s</span>' +
           '<span style="opacity:0.35">|</span>' +
-          '<span style="display:inline-flex;align-items:center;gap:5px;">' + dbSvg + formatTok(d.totalTokens) + ' tok · 缓存命中 ' + d.cacheHitRate + '%</span>' +
+          '<span style="display:inline-flex;align-items:center;gap:5px;">' + dbSvg + formatTok(d.totalTokens) + ' tok · ' + L.cacheHit + ' ' + d.cacheHitRate + '%</span>' +
           '<span style="opacity:0.35">|</span>' +
-          '<span id="agy-context-trigger" title="' + (d.hasAgyContext ? '点击打开 Context 面板' : '') + '" style="display:inline-flex;align-items:center;gap:5px;' + (d.hasAgyContext ? 'cursor:pointer;' : '') + '">' + ringSvg + pct + '%</span>';
+          '<span id="agy-context-trigger" title="' + (d.hasAgyContext ? L.openContext : '') + '" style="display:inline-flex;align-items:center;gap:5px;' + (d.hasAgyContext ? 'cursor:pointer;' : '') + '">' + ringSvg + pct + '%</span>';
         const trigger = document.getElementById('agy-context-trigger');
         if (trigger && d.hasAgyContext) {
           trigger.onclick = () => {
@@ -400,7 +492,7 @@ function buildStatsBarInjectJS() {
           };
         }
       } catch {
-        bar.textContent = '会话统计: 本地服务未连接';
+        bar.textContent = L.disconnected;
       }
     };
 
@@ -477,7 +569,7 @@ async function applyConfig(cfg, logFn = console.log) {
 
   if (cfg.enableStatsBar) {
     ensureStatsServer();
-    parts.push(buildStatsBarInjectJS());
+    parts.push(buildStatsBarInjectJS(cfg.lang));
   } else {
     parts.push(buildStatsBarRemoveJS());
   }
@@ -515,109 +607,122 @@ async function promptText(question, defaultValue = '') {
 async function runTUI() {
   const cfg = loadConfig();
   let cursor = 0;
-  let statusMsg = '使用 ↑/↓ 选择，Space/Enter 切换或编辑，q 退出';
+  let statusMsg = t(cfg).hint;
 
-  const getItems = () => [
-    {
-      key: 'toggleWallpaper',
-      label: `[${cfg.enableWallpaper ? 'x' : ' '}] 启用注入背景`,
-      action: () => {
-        cfg.enableWallpaper = !cfg.enableWallpaper;
-        saveConfig(cfg);
-      },
-    },
-    {
-      key: 'imagePath',
-      label: `    背景图片路径: ${cfg.imagePath || '(未设置)'}`,
-      needInput: true,
-      action: async () => {
-        const val = await promptText('请输入背景图片路径', cfg.imagePath);
-        cfg.imagePath = val;
-        saveConfig(cfg);
-      },
-    },
-    {
-      key: 'opacity',
-      label: `    背景透明度:   ${cfg.opacity}`,
-      needInput: true,
-      action: async () => {
-        const val = await promptText('请输入透明度 (0.0 ~ 1.0)', String(cfg.opacity));
-        const num = Number(val);
-        if (!Number.isNaN(num)) {
-          cfg.opacity = Math.min(1, Math.max(0, num));
+  const getItems = () => {
+    const tr = t(cfg);
+    return [
+      {
+        key: 'lang',
+        label: tr.langLabel,
+        action: () => {
+          cfg.lang = cfg.lang === 'en' ? 'zh' : 'en';
           saveConfig(cfg);
-        } else {
-          statusMsg = '[warn] 透明度必须是数字';
-        }
+          statusMsg = t(cfg).hint;
+        },
       },
-    },
-    {
-      key: 'toggleInput',
-      label: `[${cfg.enableInputStyle ? 'x' : ' '}] 启用样式扁平化 (全局去阴影叠加 + 极简细边框)`,
-      action: () => {
-        cfg.enableInputStyle = !cfg.enableInputStyle;
-        saveConfig(cfg);
-      },
-    },
-    {
-      key: 'toggleStatsBar',
-      label: `[${cfg.enableStatsBar ? 'x' : ' '}] 启用底部会话统计栏 (轮数/步数 · tok/s · 缓存命中率)`,
-      action: () => {
-        cfg.enableStatsBar = !cfg.enableStatsBar;
-        saveConfig(cfg);
-      },
-    },
-    {
-      key: 'apply',
-      label: '▶ 应用配置并注入到 Antigravity Desktop',
-      action: async () => {
-        statusMsg = '[info] 正在注入...';
-        render();
-        try {
-          const count = await applyConfig(cfg, (m) => {
-            statusMsg = m;
-            render();
-          });
+      {
+        key: 'toggleWallpaper',
+        label: `[${cfg.enableWallpaper ? 'x' : ' '}] ${tr.enableWallpaper}`,
+        action: () => {
+          cfg.enableWallpaper = !cfg.enableWallpaper;
           saveConfig(cfg);
-          statusMsg = `[ok] 已成功应用配置到 ${count} 个窗口`;
-        } catch (err) {
-          statusMsg = `[error] ${err.message || err}`;
-        }
+        },
       },
-    },
-    {
-      key: 'clearAll',
-      label: '✕ 清除所有注入样式 (恢复原生)',
-      action: async () => {
-        try {
-          const count = await applyConfig(
-            { ...cfg, enableWallpaper: false, enableInputStyle: false },
-            (m) => {
+      {
+        key: 'imagePath',
+        label: `    ${tr.imagePath}: ${cfg.imagePath || tr.unset}`,
+        needInput: true,
+        action: async () => {
+          const val = await promptText(tr.promptImg, cfg.imagePath);
+          cfg.imagePath = val;
+          saveConfig(cfg);
+        },
+      },
+      {
+        key: 'opacity',
+        label: `    ${tr.opacity}:   ${cfg.opacity}`,
+        needInput: true,
+        action: async () => {
+          const val = await promptText(tr.promptOpacity, String(cfg.opacity));
+          const num = Number(val);
+          if (!Number.isNaN(num)) {
+            cfg.opacity = Math.min(1, Math.max(0, num));
+            saveConfig(cfg);
+          } else {
+            statusMsg = tr.warnOpacity;
+          }
+        },
+      },
+      {
+        key: 'toggleInput',
+        label: `[${cfg.enableInputStyle ? 'x' : ' '}] ${tr.enableFlat}`,
+        action: () => {
+          cfg.enableInputStyle = !cfg.enableInputStyle;
+          saveConfig(cfg);
+        },
+      },
+      {
+        key: 'toggleStatsBar',
+        label: `[${cfg.enableStatsBar ? 'x' : ' '}] ${tr.enableStats}`,
+        action: () => {
+          cfg.enableStatsBar = !cfg.enableStatsBar;
+          saveConfig(cfg);
+        },
+      },
+      {
+        key: 'apply',
+        label: tr.apply,
+        action: async () => {
+          statusMsg = tr.injecting;
+          render();
+          try {
+            const count = await applyConfig(cfg, (m) => {
               statusMsg = m;
               render();
-            }
-          );
-          statusMsg = `[ok] 已清除 ${count} 个窗口的所有注入样式`;
-        } catch (err) {
-          statusMsg = `[error] ${err.message || err}`;
-        }
+            });
+            saveConfig(cfg);
+            statusMsg = tr.applied(count);
+          } catch (err) {
+            statusMsg = `[error] ${err.message || err}`;
+          }
+        },
       },
-    },
-    {
-      key: 'quit',
-      label: '退出',
-      action: () => {
-        process.stdout.write('\x1b[?25h\n');
-        process.exit(0);
+      {
+        key: 'clearAll',
+        label: tr.clearAll,
+        action: async () => {
+          try {
+            const count = await applyConfig(
+              { ...cfg, enableWallpaper: false, enableInputStyle: false },
+              (m) => {
+                statusMsg = m;
+                render();
+              }
+            );
+            statusMsg = tr.clearedAll(count);
+          } catch (err) {
+            statusMsg = `[error] ${err.message || err}`;
+          }
+        },
       },
-    },
-  ];
+      {
+        key: 'quit',
+        label: tr.quit,
+        action: () => {
+          process.stdout.write('\x1b[?25h\n');
+          process.exit(0);
+        },
+      },
+    ];
+  };
 
   function render() {
+    const tr = t(cfg);
     const items = getItems();
     process.stdout.write('\x1b[2J\x1b[H');
-    console.log('\x1b[1;36m=== Antigravity Desktop 外观配置 (CDP 零修改注入) ===\x1b[0m');
-    console.log(`CDP 端口: ${CDP_PORT}  |  配置文件: ${CONFIG_PATH}\n`);
+    console.log(`\x1b[1;36m${tr.title}\x1b[0m`);
+    console.log(`${tr.cdpPort}: ${CDP_PORT}  |  ${tr.configFile}: ${CONFIG_PATH}\n`);
 
     items.forEach((item, idx) => {
       const prefix = idx === cursor ? '\x1b[1;32m❯ ' : '  ';
