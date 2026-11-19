@@ -36,10 +36,11 @@
 
 ### 1. Install as Antigravity Plugin (Recommended)
 ```bash
-# Link or clone into Antigravity plugins directory:
+agy plugin install https://github.com/peach0x33a/agy-desktop-qol
+
+# Or link/clone directly into Antigravity plugins directory:
 ln -s "$(pwd)" ~/.gemini/config/plugins/agy-desktop-qol
 ```
-*(Or install via `agy plugin install <your-github-repo-url>` once published.)*
 
 Once installed, open **`⋮ -> Extensions -> Desktop QoL`** in Antigravity Desktop to configure all options visually.
 
