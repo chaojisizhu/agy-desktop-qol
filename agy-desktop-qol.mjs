@@ -895,16 +895,44 @@ function buildStatsBarRemoveJS() {
   })()`;
 }
 
+const WIN_MEDIA_MODAL_CSS =
+  os.platform() === 'win32'
+    ? `
+  [data-testid="media-modal-header"] {
+    padding-top: calc(env(titlebar-area-height, 32px) + 8px) !important;
+    padding-bottom: 8px !important;
+    padding-right: 16px !important;
+    height: auto !important;
+  }
+`
+    : '';
+
 const CLEAN_INPUT_CSS = `
   *, *::before, *::after {
     box-shadow: none !important;
   }
   .surface-composer,
+  .agy-user-bubble,
   [role="dialog"],
   [role="menu"],
   [data-radix-popper-content-wrapper] > * {
     border: 1px solid light-dark(rgba(10, 10, 12, 0.12), rgba(255, 255, 255, 0.14)) !important;
   }
+  [data-slot="toggle-group"] > button[data-pressed],
+  .agy-sidebar-row[data-selected="true"] {
+    box-shadow: inset 0 0 0 1px light-dark(rgba(10, 10, 12, 0.09), rgba(255, 255, 255, 0.09)) !important;
+  }
+  [data-main-content-body]::after,
+  [data-side-panel-body]::after,
+  [data-hoisted-slot-rim="side"],
+  [data-tiling-pane]::after,
+  [data-testid="bottom-terminal-panel"]::after {
+    box-shadow: inset 0 0 0 0.5px var(--card-edge, light-dark(rgba(0, 0, 0, 0.12), rgba(255, 255, 255, 0.10))) !important;
+  }
+  [role="switch"] > span {
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18), 0 0 0 0.5px rgba(0, 0, 0, 0.08) !important;
+  }
+  ${WIN_MEDIA_MODAL_CSS}
 `;
 
 function buildEscCancelInjectJS(lang = 'zh') {
