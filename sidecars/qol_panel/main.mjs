@@ -18,6 +18,18 @@ const { SidecarApp, Response } = await import('sidecar_sdk').catch(() => import(
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const NO_STORE = { 'Cache-Control': 'no-store' };
 
+// 父进程退出时自动清理自身，避免重启 Antigravity 后残留旧进程占用 9223 端口并覆盖注入
+const parentPid = process.ppid;
+if (parentPid && parentPid > 1) {
+  setInterval(() => {
+    try {
+      process.kill(parentPid, 0);
+    } catch {
+      process.exit(0);
+    }
+  }, 3000).unref();
+}
+
 // 在 Sidecar 后台进程内直接托管统计服务 (9223) 与 CDP 自动注入守护
 startWatchLoop(3000);
 
