@@ -492,11 +492,13 @@ function computeConversationStats(convId) {
       lastStep.type === 'PLANNER_RESPONSE' &&
       Array.isArray(lastStep.tool_calls) &&
       lastStep.tool_calls.length > 0;
+    const isCancelled = lastStep.status === 'CANCELLED' || lastStep.status === 'CANCELED';
     const isWorking =
-      isToolCall ||
-      lastStep.type === 'USER_INPUT' ||
-      lastStep.type === 'GENERIC' ||
-      lastStep.type === 'ERROR_MESSAGE';
+      !isCancelled &&
+      (isToolCall ||
+        lastStep.type === 'USER_INPUT' ||
+        lastStep.type === 'GENERIC' ||
+        lastStep.type === 'ERROR_MESSAGE');
 
     if (isWorking) {
       const ls = inspectLanguageServerLog(stepTs);
