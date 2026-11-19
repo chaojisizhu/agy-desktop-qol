@@ -676,8 +676,8 @@ function buildStatsBarInjectJS(lang = 'zh', clickTarget = '') {
     const formatLiveBadge = (live) => {
       if (!live || live.phase === 'idle') {
         return {
-          color: 'rgba(255,255,255,0.45)',
-          dot: 'rgba(255,255,255,0.32)',
+          color: 'var(--muted-foreground, light-dark(#64748b, rgba(255,255,255,0.52)))',
+          dot: 'light-dark(rgba(10,10,12,0.32), rgba(255,255,255,0.32))',
           barText: L.phaseIdle,
           popText: L.phaseIdle,
           detail: '',
@@ -691,8 +691,8 @@ function buildStatsBarInjectJS(lang = 'zh', clickTarget = '') {
         const att = live.attempt ? ' #' + live.attempt : '';
         const wait = live.retryIn ? ' (' + live.retryIn + ' ' + L.retryIn + ')' : '';
         return {
-          color: '#f87171',
-          dot: '#f87171',
+          color: 'light-dark(#dc2626, #f87171)',
+          dot: 'light-dark(#dc2626, #f87171)',
           barText: barLabel,
           popText: tag + att + wait,
           detail: live.detail || '',
@@ -701,8 +701,8 @@ function buildStatsBarInjectJS(lang = 'zh', clickTarget = '') {
       }
       if (live.phase === 'monitor') {
         return {
-          color: '#c084fc',
-          dot: '#c084fc',
+          color: 'light-dark(#7c3aed, #c084fc)',
+          dot: 'light-dark(#7c3aed, #c084fc)',
           barText: L.phaseMonitor,
           popText: L.phaseMonitor + el,
           detail: live.detail || '',
@@ -711,8 +711,8 @@ function buildStatsBarInjectJS(lang = 'zh', clickTarget = '') {
       }
       if (live.phase === 'tool') {
         return {
-          color: '#fbbf24',
-          dot: '#fbbf24',
+          color: 'light-dark(#b45309, #fbbf24)',
+          dot: 'light-dark(#b45309, #fbbf24)',
           barText: L.phaseTool,
           popText: L.phaseTool + el,
           detail: (live.tools || []).join(', '),
@@ -721,8 +721,8 @@ function buildStatsBarInjectJS(lang = 'zh', clickTarget = '') {
       }
       if (live.phase === 'streaming') {
         return {
-          color: '#34d399',
-          dot: '#34d399',
+          color: 'light-dark(#059669, #34d399)',
+          dot: 'light-dark(#059669, #34d399)',
           barText: L.phaseStreaming,
           popText: L.phaseStreaming + el,
           detail: '',
@@ -730,8 +730,8 @@ function buildStatsBarInjectJS(lang = 'zh', clickTarget = '') {
         };
       }
       return {
-        color: '#60a5fa',
-        dot: '#60a5fa',
+        color: 'light-dark(#2563eb, #60a5fa)',
+        dot: 'light-dark(#2563eb, #60a5fa)',
         barText: L.phaseWaiting,
         popText: L.phaseWaiting + el,
         detail: '',
@@ -746,7 +746,7 @@ function buildStatsBarInjectJS(lang = 'zh', clickTarget = '') {
       if (!bar) {
         bar = document.createElement('div');
         bar.id = 'agy-stats-bar';
-        bar.style.cssText = 'position:relative;display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:12px;padding:6px 10px 2px;font-size:12px;color:rgba(255,255,255,0.55);user-select:none;font-family:system-ui,-apple-system,sans-serif;cursor:default;';
+        bar.style.cssText = 'position:relative;display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:12px;padding:6px 10px 2px;font-size:12px;color:var(--muted-foreground,light-dark(#52525b,rgba(255,255,255,0.62)));user-select:none;font-family:system-ui,-apple-system,sans-serif;cursor:default;';
 
         const popWrap = document.createElement('div');
         popWrap.id = 'agy-stats-popover-wrap';
@@ -754,7 +754,7 @@ function buildStatsBarInjectJS(lang = 'zh', clickTarget = '') {
 
         const pop = document.createElement('div');
         pop.id = 'agy-stats-popover';
-        pop.style.cssText = 'width:280px;padding:12px 14px;border-radius:12px;background:rgba(28,28,34,0.96);border:1px solid rgba(255,255,255,0.12);box-shadow:0 8px 28px rgba(0,0,0,0.45);backdrop-filter:blur(12px);color:rgba(255,255,255,0.88);font-size:12px;user-select:text;cursor:auto;';
+        pop.style.cssText = 'width:280px;padding:12px 14px;border-radius:12px;background:var(--card,light-dark(rgba(255,255,255,0.96),rgba(28,28,34,0.96)));border:1px solid var(--card-border,light-dark(rgba(10,10,12,0.12),rgba(255,255,255,0.12)));box-shadow:light-dark(0 8px 28px rgba(10,10,12,0.12),0 8px 28px rgba(0,0,0,0.45));backdrop-filter:blur(12px);color:var(--foreground,light-dark(#0a0a0c,rgba(255,255,255,0.88)));font-size:12px;user-select:text;cursor:auto;';
         popWrap.appendChild(pop);
         bar.appendChild(popWrap);
 
@@ -794,8 +794,8 @@ function buildStatsBarInjectJS(lang = 'zh', clickTarget = '') {
         const offset = c - (pct / 100) * c;
         const ringSvg =
           '<svg width="14" height="14" viewBox="0 0 14 14" style="transform:rotate(-90deg);flex-shrink:0;">' +
-          '<circle cx="7" cy="7" r="' + r + '" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="2"/>' +
-          '<circle cx="7" cy="7" r="' + r + '" fill="none" stroke="rgba(255,255,255,0.75)" stroke-width="2" stroke-dasharray="' + c.toFixed(2) + '" stroke-dashoffset="' + offset.toFixed(2) + '" stroke-linecap="round"/>' +
+          '<circle cx="7" cy="7" r="' + r + '" fill="none" stroke="light-dark(rgba(10,10,12,0.16), rgba(255,255,255,0.18))" stroke-width="2"/>' +
+          '<circle cx="7" cy="7" r="' + r + '" fill="none" stroke="light-dark(rgba(10,10,12,0.72), rgba(255,255,255,0.78))" stroke-width="2" stroke-dasharray="' + c.toFixed(2) + '" stroke-dashoffset="' + offset.toFixed(2) + '" stroke-linecap="round"/>' +
           '</svg>';
         const gaugeSvg =
           '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:0.85;">' +
@@ -808,25 +808,25 @@ function buildStatsBarInjectJS(lang = 'zh', clickTarget = '') {
         if (pop) {
           const row = (k, v) =>
             '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;">' +
-            '<span style="color:rgba(255,255,255,0.55);">' + k + '</span>' +
+            '<span style="color:var(--muted-foreground,light-dark(#52525b,rgba(255,255,255,0.62)));">' + k + '</span>' +
             '<span style="font-variant-numeric:tabular-nums;">' + v + '</span></div>';
           let liveHtml = '';
           if (liveBadge) {
             const isErr = d.live && (d.live.phase === 'retry' || d.live.phase === 'error');
             const detailText = liveBadge.detail || '';
-            const detailColor = isErr ? 'rgba(248,113,113,0.9)' : 'rgba(255,255,255,0.65)';
+            const detailColor = isErr ? 'light-dark(#dc2626,rgba(248,113,113,0.9))' : 'var(--muted-foreground,light-dark(#52525b,rgba(255,255,255,0.65)))';
             const detailLine = detailText
               ? '<div style="margin-top:5px;font-size:11px;line-height:1.4;color:' + detailColor + ';word-break:break-word;">' + esc(detailText) + '</div>'
               : '';
             liveHtml =
-              '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.1);">' +
+              '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border,light-dark(rgba(10,10,12,0.1),rgba(255,255,255,0.1)));">' +
               '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">' +
-              '<span style="color:rgba(255,255,255,0.55);flex-shrink:0;">' + L.liveTitle + '</span>' +
+              '<span style="color:var(--muted-foreground,light-dark(#52525b,rgba(255,255,255,0.62)));flex-shrink:0;">' + L.liveTitle + '</span>' +
               '<span style="color:' + liveBadge.color + ';font-weight:500;text-align:right;">' + esc(liveBadge.popText) + '</span></div>' +
               detailLine + '</div>';
           }
           const nextPopHtml =
-            '<div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:8px;margin-bottom:6px;border-bottom:1px solid rgba(255,255,255,0.1);font-weight:600;">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:8px;margin-bottom:6px;border-bottom:1px solid var(--border,light-dark(rgba(10,10,12,0.1),rgba(255,255,255,0.1)));font-weight:600;">' +
             '<span style="display:inline-flex;align-items:center;gap:6px;">' + gaugeSvg + L.popTitle + '</span><span>' + d.turns + ' ' + L.turns + ' ' + d.steps + ' ' + L.steps + '</span></div>' +
             row(L.modelTime, formatDuration(d.modelSeconds)) +
             row(L.tps, (d.tps || '--') + ' tok/s') +
@@ -895,16 +895,44 @@ function buildStatsBarRemoveJS() {
   })()`;
 }
 
+const WIN_MEDIA_MODAL_CSS =
+  os.platform() === 'win32'
+    ? `
+  [data-testid="media-modal-header"] {
+    padding-top: calc(env(titlebar-area-height, 32px) + 8px) !important;
+    padding-bottom: 8px !important;
+    padding-right: 16px !important;
+    height: auto !important;
+  }
+`
+    : '';
+
 const CLEAN_INPUT_CSS = `
   *, *::before, *::after {
     box-shadow: none !important;
   }
   .surface-composer,
+  .agy-user-bubble,
   [role="dialog"],
   [role="menu"],
   [data-radix-popper-content-wrapper] > * {
-    border: 1px solid rgba(255, 255, 255, 0.14) !important;
+    border: 1px solid light-dark(rgba(10, 10, 12, 0.12), rgba(255, 255, 255, 0.14)) !important;
   }
+  [data-slot="toggle-group"] > button[data-pressed],
+  .agy-sidebar-row[data-selected="true"] {
+    box-shadow: inset 0 0 0 1px light-dark(rgba(10, 10, 12, 0.09), rgba(255, 255, 255, 0.09)) !important;
+  }
+  [data-main-content-body]::after,
+  [data-side-panel-body]::after,
+  [data-hoisted-slot-rim="side"],
+  [data-tiling-pane]::after,
+  [data-testid="bottom-terminal-panel"]::after {
+    box-shadow: inset 0 0 0 0.5px var(--card-edge, light-dark(rgba(0, 0, 0, 0.12), rgba(255, 255, 255, 0.10))) !important;
+  }
+  [role="switch"] > span {
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18), 0 0 0 0.5px rgba(0, 0, 0, 0.08) !important;
+  }
+  ${WIN_MEDIA_MODAL_CSS}
 `;
 
 function buildEscCancelInjectJS(lang = 'zh') {
@@ -943,9 +971,9 @@ function buildEscCancelInjectJS(lang = 'zh') {
         el.id = 'agy-esc-toast';
         el.style.cssText =
           'position:fixed;z-index:100001;pointer-events:none;padding:9px 16px;border-radius:999px;' +
-          'background:rgba(24,24,30,0.92);border:1px solid rgba(255,255,255,0.14);' +
-          'box-shadow:0 8px 28px rgba(0,0,0,0.45);backdrop-filter:blur(12px);' +
-          'color:rgba(255,255,255,0.92);font-size:13px;font-weight:500;letter-spacing:0.01em;' +
+          'background:var(--card,light-dark(rgba(255,255,255,0.94),rgba(24,24,30,0.92)));border:1px solid var(--card-border,light-dark(rgba(10,10,12,0.14),rgba(255,255,255,0.14)));' +
+          'box-shadow:light-dark(0 8px 28px rgba(10,10,12,0.12),0 8px 28px rgba(0,0,0,0.45));backdrop-filter:blur(12px);' +
+          'color:var(--foreground,light-dark(#0a0a0c,rgba(255,255,255,0.92)));font-size:13px;font-weight:500;letter-spacing:0.01em;' +
           'font-family:system-ui,-apple-system,sans-serif;white-space:nowrap;' +
           'opacity:0;transform:translate(-50%,-46%) scale(0.97);transition:opacity 0.16s ease,transform 0.16s ease;';
         document.body.appendChild(el);
