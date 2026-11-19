@@ -4,5 +4,5 @@
   "displayName": "Desktop QoL",
   "version": "1.0.0",
   "description": "Zero-dependency QoL enhancer for Antigravity Desktop (custom wallpaper, flat UI, session stats bar) via CDP.",
-  "mcpServers": "./mcp_config.json"
+  "logo": "assets/logo.svg"
 }
