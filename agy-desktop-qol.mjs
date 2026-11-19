@@ -50,6 +50,7 @@ const DEFAULT_CONFIG = {
   enableStatsBar: true,
   enableEscCancel: true,
   statsClickTarget: 'sidecar__context/context_panel__/',
+  statsBarItems: ['status', 'turns', 'tokens', 'context'],
 };
 
 const I18N = {
@@ -648,12 +649,21 @@ function ensureStatsServer() {
   server.listen(STATS_PORT, '127.0.0.1');
 }
 
-function buildStatsBarInjectJS(lang = 'zh', clickTarget = '') {
+function normalizeStatsBarItems(items) {
+  const valid = new Set(['status', 'turns', 'tokens', 'context']);
+  if (!Array.isArray(items)) return [...DEFAULT_CONFIG.statsBarItems];
+  const filtered = items.map((s) => String(s).trim().toLowerCase()).filter((s) => valid.has(s));
+  return filtered.length > 0 ? filtered : [...DEFAULT_CONFIG.statsBarItems];
+}
+
+function buildStatsBarInjectJS(lang = 'zh', clickTarget = '', statsBarItems = DEFAULT_CONFIG.statsBarItems) {
   const L = JSON.stringify(I18N[lang === 'en' ? 'en' : 'zh'].bar);
   const CLICK_TARGET = JSON.stringify(String(clickTarget || '').trim());
+  const ITEMS = JSON.stringify(normalizeStatsBarItems(statsBarItems));
   return `(() => {
     const L = ${L};
     const CLICK_TARGET = ${CLICK_TARGET};
+    const ITEMS = ${ITEMS};
     if (window.__agyStatsTimer) clearInterval(window.__agyStatsTimer);
     const old = document.getElementById('agy-stats-bar');
     if (old) old.remove();
@@ -850,16 +860,17 @@ function buildStatsBarInjectJS(lang = 'zh', clickTarget = '') {
         const liveSpan =
           '<span style="display:inline-flex;align-items:center;gap:6px;color:' + liveBadge.color + ';font-weight:' + (liveBadge.idle ? '400' : '500') + ';">' +
           '<span style="width:6px;height:6px;border-radius:50%;background:' + liveBadge.dot + ';display:inline-block;"></span>' +
-          esc(liveBadge.barText) + '</span><span style="opacity:0.35">|</span>';
+          esc(liveBadge.barText) + '</span>';
+        const partMap = {
+          status: liveSpan,
+          turns: '<span style="display:inline-flex;align-items:center;gap:5px;">' + gaugeSvg + d.turns + ' ' + L.turns + ' ' + d.steps + ' ' + L.steps + ' · ' + (d.tps || '--') + ' tok/s</span>',
+          tokens: '<span style="display:inline-flex;align-items:center;gap:5px;">' + dbSvg + formatTok(d.totalTokens) + ' tok · ' + L.cacheHit + ' ' + d.cacheHitRate + '%</span>',
+          context: '<span id="agy-context-trigger" style="display:inline-flex;align-items:center;gap:5px;">' + ringSvg + pct + '%</span>',
+        };
+        const sep = '<span style="opacity:0.35">|</span>';
         summary.style.cursor = CLICK_TARGET ? 'pointer' : 'default';
         summary.title = CLICK_TARGET || '';
-        summary.innerHTML =
-          liveSpan +
-          '<span style="display:inline-flex;align-items:center;gap:5px;">' + gaugeSvg + d.turns + ' ' + L.turns + ' ' + d.steps + ' ' + L.steps + ' · ' + (d.tps || '--') + ' tok/s</span>' +
-          '<span style="opacity:0.35">|</span>' +
-          '<span style="display:inline-flex;align-items:center;gap:5px;">' + dbSvg + formatTok(d.totalTokens) + ' tok · ' + L.cacheHit + ' ' + d.cacheHitRate + '%</span>' +
-          '<span style="opacity:0.35">|</span>' +
-          '<span id="agy-context-trigger" style="display:inline-flex;align-items:center;gap:5px;">' + ringSvg + pct + '%</span>';
+        summary.innerHTML = ITEMS.map((k) => partMap[k]).filter(Boolean).join(sep);
         summary.onclick = CLICK_TARGET
           ? () => {
               if (/^https?:\\/\\//i.test(CLICK_TARGET)) {
@@ -1099,7 +1110,7 @@ async function applyConfig(cfg, logFn = console.log) {
 
   if (cfg.enableStatsBar) {
     ensureStatsServer();
-    parts.push(buildStatsBarInjectJS(cfg.lang, cfg.statsClickTarget));
+    parts.push(buildStatsBarInjectJS(cfg.lang, cfg.statsClickTarget, cfg.statsBarItems));
   } else {
     parts.push(buildStatsBarRemoveJS());
   }
