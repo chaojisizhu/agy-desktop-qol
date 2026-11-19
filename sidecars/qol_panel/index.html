@@ -442,6 +442,15 @@
         <span class="sub" id="lblClickTarget" style="margin:0;">点击状态栏的地址</span>
         <input type="text" id="statsClickTarget" placeholder="sidecar__context/context_panel__/" />
       </div>
+      <div class="row-stack">
+        <span class="sub" id="lblStatsItems" style="margin:0;">底栏显示内容</span>
+        <div style="display:flex;flex-wrap:wrap;gap:12px;font-size:12px;">
+          <label style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" class="stats-item-cb" value="status" /> <span id="lblItemStatus">实时状态</span></label>
+          <label style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" class="stats-item-cb" value="turns" /> <span id="lblItemTurns">轮次与速度</span></label>
+          <label style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" class="stats-item-cb" value="tokens" /> <span id="lblItemTokens">Token 与缓存</span></label>
+          <label style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" class="stats-item-cb" value="context" /> <span id="lblItemContext">上下文百分比</span></label>
+        </div>
+      </div>
     </section>
 
     <div class="status" id="status"></div>
@@ -495,6 +504,11 @@
         lblStats: '底部会话统计栏',
         subStats: '轮数/步数、tok/s、缓存命中率、上下文与实时状态',
         lblClickTarget: '点击状态栏的地址',
+        lblStatsItems: '底栏显示内容',
+        lblItemStatus: '实时状态',
+        lblItemTurns: '轮次与速度',
+        lblItemTokens: 'Token 与缓存',
+        lblItemContext: '上下文百分比',
         saved: '已应用到 Antigravity Desktop',
         cleared: '已清除所有注入',
         err: '读取或保存配置失败'
@@ -562,6 +576,10 @@
         document.getElementById('enableEscCancel').checked = c.enableEscCancel !== false;
         document.getElementById('enableStatsBar').checked = !!c.enableStatsBar;
         document.getElementById('statsClickTarget').value = c.statsClickTarget ?? 'sidecar__context/context_panel__/';
+        const items = Array.isArray(c.statsBarItems) && c.statsBarItems.length ? c.statsBarItems : ['status', 'turns', 'tokens', 'context'];
+        document.querySelectorAll('.stats-item-cb').forEach((cb) => {
+          cb.checked = items.includes(cb.value);
+        });
         renderLang();
       } catch {
         showStatus(TEXT[lang].err, true);
@@ -578,6 +596,7 @@
         enableEscCancel: document.getElementById('enableEscCancel').checked,
         enableStatsBar: document.getElementById('enableStatsBar').checked,
         statsClickTarget: document.getElementById('statsClickTarget').value.trim(),
+        statsBarItems: Array.from(document.querySelectorAll('.stats-item-cb:checked')).map((cb) => cb.value),
         ...override
       };
       try {
