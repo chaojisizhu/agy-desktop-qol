@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Desktop QoL</title>
+  <script src="/preload.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --qol-border: rgba(255, 255, 255, 0.09);
+      --qol-border-strong: rgba(255, 255, 255, 0.16);
+      --qol-surface: rgba(255, 255, 255, 0.03);
+      --qol-input-bg: rgba(0, 0, 0, 0.28);
+      --qol-accent: #3b82f6;
+      --qol-accent-hover: #2563eb;
+      --qol-muted: rgba(255, 255, 255, 0.52);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+      font-size: 13px;
+      line-height: 1.45;
+      color: var(--foreground, #eceef2);
+      background: var(--background, #111216);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Header */
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--qol-border);
+      background: color-mix(in srgb, var(--background, #111216) 86%, transparent);
+      backdrop-filter: blur(12px);
+    }
+    .title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .title {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    /* Buttons */
+    button {
+      appearance: none;
+      border: 1px solid var(--qol-border-strong);
+      background: rgba(255, 255, 255, 0.05);
+      color: inherit;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 5px 11px;
+      border-radius: 7px;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease, opacity 0.15s ease;
+    }
+    button:hover {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.24);
+    }
+    button:active {
+      transform: scale(0.97);
+    }
+    button.primary {
+      background: var(--qol-accent);
+      border-color: transparent;
+      color: #fff;
+    }
+    button.primary:hover {
+      background: var(--qol-accent-hover);
+    }
+    button.ghost {
+      background: transparent;
+      border-color: var(--qol-border);
+      color: var(--qol-muted);
+      padding: 5px 8px;
+      font-size: 11px;
+    }
+    button.ghost:hover {
+      color: inherit;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    /* Main Content */
+    .content {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--qol-muted);
+      margin: 2px 0 -4px 4px;
+    }
+    .card {
+      background: var(--qol-surface);
+      border: 1px solid var(--qol-border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      padding: 12px 14px;
+    }
+    .row + .row {
+      border-top: 1px solid var(--qol-border);
+    }
+    .row-stack {
+      padding: 0 14px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .label {
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .sub {
+      font-size: 11.5px;
+      color: var(--qol-muted);
+      margin-top: 2px;
+    }
+
+    /* Inputs */
+    input[type="text"] {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--qol-border);
+      background: var(--qol-input-bg);
+      color: inherit;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11.5px;
+      outline: none;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    input[type="text"]:focus {
+      border-color: var(--qol-accent);
+      background: rgba(0, 0, 0, 0.42);
+    }
+    .opacity-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .range-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 1;
+      max-width: 180px;
+    }
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 4px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.14);
+      outline: none;
+      cursor: pointer;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+      cursor: pointer;
+      transition: transform 0.12s ease;
+    }
+    input[type="range"]::-webkit-slider-thumb:hover {
+      transform: scale(1.12);
+    }
+    .opacity-val {
+      min-width: 34px;
+      text-align: right;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      color: var(--qol-muted);
+    }
+
+    /* Toggle Switch */
+    .switch {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      width: 38px;
+      height: 22px;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+    .switch input {
+      position: absolute;
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .switch-track {
+      position: absolute;
+      inset: 0;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.14);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      transition: background 0.2s ease, border-color 0.2s ease;
+    }
+    .switch-track::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+      transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .switch input:checked + .switch-track {
+      background: var(--qol-accent);
+      border-color: transparent;
+    }
+    .switch input:checked + .switch-track::after {
+      transform: translateX(16px);
+    }
+    .switch input:focus-visible + .switch-track {
+      outline: 2px solid var(--qol-accent);
+      outline-offset: 2px;
+    }
+
+    /* Status Toast */
+    .status {
+      min-height: 20px;
+      padding: 0 4px;
+      font-size: 12px;
+      color: #93c5fd;
+      opacity: 0;
+      transform: translateY(2px);
+      transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+    .status.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .status.err {
+      color: #f87171;
+    }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <div class="title-wrap">
+      <h2 class="title" id="title">Desktop QoL</h2>
+    </div>
+    <div class="header-actions">
+      <button class="ghost" id="langBtn" title="Switch Language">EN</button>
+      <button id="clearBtn">清除</button>
+      <button class="primary" id="applyBtn">应用</button>
+    </div>
+  </header>
+
+  <main class="content">
+    <div class="section-title" id="secAppearance">外观</div>
+    <section class="card">
+      <div class="row">
+        <div>
+          <div class="label" id="lblWp">注入背景</div>
+          <div class="sub" id="subWp">作为半透明氛围层覆盖在窗口上</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="enableWallpaper" />
+          <span class="switch-track"></span>
+        </label>
+      </div>
+      <div class="row-stack">
+        <input type="text" id="imagePath" placeholder="/path/to/wallpaper.png 或 https://..." />
+        <div class="opacity-row">
+          <span class="sub" id="lblOp" style="margin:0;">背景透明度</span>
+          <div class="range-wrap">
+            <input type="range" id="opacity" min="0" max="1" step="0.02" value="0.12" />
+            <span class="opacity-val" id="opacityVal">0.12</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="section-title" id="secEnhance">界面增强</div>
+    <section class="card">
+      <div class="row">
+        <div>
+          <div class="label" id="lblFlat">样式扁平化</div>
+          <div class="sub" id="subFlat">全局去阴影叠加 + 极简 1px 细边框</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="enableInputStyle" />
+          <span class="switch-track"></span>
+        </label>
+      </div>
+      <div class="row">
+        <div>
+          <div class="label" id="lblEsc">ESC 取消对话</div>
+          <div class="sub" id="subEsc">生成中连按两次 ESC 快速停止（2 秒内二次确认）</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="enableEscCancel" />
+          <span class="switch-track"></span>
+        </label>
+      </div>
+      <div class="row">
+        <div>
+          <div class="label" id="lblStats">底部会话统计栏</div>
+          <div class="sub" id="subStats">轮数/步数、tok/s、缓存命中率、上下文与实时状态</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="enableStatsBar" />
+          <span class="switch-track"></span>
+        </label>
+      </div>
+      <div class="row-stack">
+        <span class="sub" id="lblClickTarget" style="margin:0;">点击状态栏的地址</span>
+        <input type="text" id="statsClickTarget" placeholder="sidecar__context/context_panel__/" />
+      </div>
+    </section>
+
+    <div class="status" id="status"></div>
+  </main>
+
+  <script>
+    const apiFetch = (url, opts) => (window.sidecar?.fetch ? window.sidecar.fetch(url, opts) : fetch(url, opts));
+    let lang = 'zh';
+    let statusTimer = null;
+
+    const TEXT = {
+      zh: {
+        title: 'Desktop QoL',
+        langBtn: 'EN',
+        applyBtn: '应用',
+        clearBtn: '清除',
+        secAppearance: '外观',
+        lblWp: '注入背景',
+        subWp: '作为半透明氛围层覆盖在窗口上',
+        lblOp: '背景透明度',
+        secEnhance: '界面增强',
+        lblFlat: '样式扁平化',
+        subFlat: '全局去阴影叠加 + 极简 1px 细边框',
+        lblEsc: 'ESC 取消对话',
+        subEsc: '生成中连按两次 ESC 快速停止（2 秒内二次确认）',
+        lblStats: '底部会话统计栏',
+        subStats: '轮数/步数、tok/s、缓存命中率、上下文与实时状态',
+        lblClickTarget: '点击状态栏的地址',
+        saved: '已应用到 Antigravity Desktop',
+        cleared: '已清除所有注入',
+        err: '读取或保存配置失败'
+      },
+      en: {
+        title: 'Desktop QoL',
+        langBtn: '中文',
+        applyBtn: 'Apply',
+        clearBtn: 'Clear',
+        secAppearance: 'Appearance',
+        lblWp: 'Custom Wallpaper',
+        subWp: 'Translucent ambient background layer',
+        lblOp: 'Opacity',
+        secEnhance: 'Enhancements',
+        lblFlat: 'Flat UI Style',
+        subFlat: 'Remove box-shadows + 1px hairline borders',
+        lblEsc: 'ESC to Cancel',
+        subEsc: 'Double-press ESC while generating to stop (2s confirmation)',
+        lblStats: 'Bottom Stats Bar',
+        subStats: 'Turns/steps, tok/s, cache hit, context & live status',
+        lblClickTarget: 'Stats Bar Click Target',
+        saved: 'Applied to Antigravity Desktop',
+        cleared: 'Cleared all injections',
+        err: 'Failed to load or save config'
+      }
+    };
+
+    const showStatus = (msg, isErr = false) => {
+      const el = document.getElementById('status');
+      el.textContent = msg;
+      el.classList.toggle('err', isErr);
+      el.classList.add('show');
+      if (statusTimer) clearTimeout(statusTimer);
+      if (msg) {
+        statusTimer = setTimeout(() => el.classList.remove('show'), 2600);
+      }
+    };
+
+    const renderLang = () => {
+      const tr = TEXT[lang];
+      for (const k of Object.keys(tr)) {
+        if (['saved', 'cleared', 'err'].includes(k)) continue;
+        const el = document.getElementById(k);
+        if (el) el.textContent = tr[k];
+      }
+    };
+
+    const opacityEl = document.getElementById('opacity');
+    const opacityValEl = document.getElementById('opacityVal');
+    const syncOpacityVal = () => {
+      opacityValEl.textContent = Number(opacityEl.value || 0).toFixed(2);
+    };
+    opacityEl.addEventListener('input', syncOpacityVal);
+
+    const load = async () => {
+      try {
+        const res = await apiFetch('/api/config');
+        const c = await res.json();
+        lang = c.lang === 'en' ? 'en' : 'zh';
+        document.getElementById('enableWallpaper').checked = !!c.enableWallpaper;
+        document.getElementById('imagePath').value = c.imagePath || '';
+        opacityEl.value = c.opacity ?? 0.12;
+        syncOpacityVal();
+        document.getElementById('enableInputStyle').checked = !!c.enableInputStyle;
+        document.getElementById('enableEscCancel').checked = c.enableEscCancel !== false;
+        document.getElementById('enableStatsBar').checked = !!c.enableStatsBar;
+        document.getElementById('statsClickTarget').value = c.statsClickTarget ?? 'sidecar__context/context_panel__/';
+        renderLang();
+      } catch {
+        showStatus(TEXT[lang].err, true);
+      }
+    };
+
+    const save = async (override = {}, customOkMsg = '') => {
+      const body = {
+        lang,
+        enableWallpaper: document.getElementById('enableWallpaper').checked,
+        imagePath: document.getElementById('imagePath').value.trim(),
+        opacity: Number(opacityEl.value || 0.12),
+        enableInputStyle: document.getElementById('enableInputStyle').checked,
+        enableEscCancel: document.getElementById('enableEscCancel').checked,
+        enableStatsBar: document.getElementById('enableStatsBar').checked,
+        statsClickTarget: document.getElementById('statsClickTarget').value.trim(),
+        ...override
+      };
+      try {
+        const res = await (await apiFetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        })).json();
+        if (res.ok) {
+          showStatus(customOkMsg || TEXT[lang].saved, false);
+        } else {
+          showStatus(res.error || TEXT[lang].err, true);
+        }
+      } catch {
+        showStatus(TEXT[lang].err, true);
+      }
+    };
+
+    document.getElementById('langBtn').onclick = () => {
+      lang = lang === 'zh' ? 'en' : 'zh';
+      renderLang();
+      save();
+    };
+    document.getElementById('applyBtn').onclick = () => save();
+    document.getElementById('clearBtn').onclick = () => {
+      document.getElementById('enableWallpaper').checked = false;
+      document.getElementById('enableInputStyle').checked = false;
+      document.getElementById('enableEscCancel').checked = false;
+      document.getElementById('enableStatsBar').checked = false;
+      save(
+        { enableWallpaper: false, enableInputStyle: false, enableEscCancel: false, enableStatsBar: false },
+        TEXT[lang].cleared
+      );
+    };
+
+    load();
+  </script>
+</body>
+</html>

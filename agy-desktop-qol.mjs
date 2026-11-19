@@ -48,6 +48,8 @@ const DEFAULT_CONFIG = {
   opacity: 0.12,
   enableInputStyle: true,
   enableStatsBar: true,
+  enableEscCancel: true,
+  statsClickTarget: 'sidecar__context/context_panel__/',
 };
 
 const I18N = {
@@ -88,6 +90,17 @@ const I18N = {
       ctxUsage: '上下文占用',
       min: '分',
       sec: '秒',
+      liveTitle: '内部状态',
+      phaseIdle: '空闲状态',
+      phaseWaiting: '等待响应',
+      phaseStreaming: '接收响应',
+      phaseTool: '执行工具',
+      phaseMonitor: '安全检查',
+      phaseRetry: '重试请求',
+      phaseError: '请求出错',
+      retryAttempt: '次',
+      retryIn: '后重试',
+      noCapacity: '容量不足',
     },
   },
   en: {
@@ -127,6 +140,17 @@ const I18N = {
       ctxUsage: 'Context Usage',
       min: 'm',
       sec: 's',
+      liveTitle: 'Live Status',
+      phaseIdle: 'Idle',
+      phaseWaiting: 'Waiting for model',
+      phaseStreaming: 'Streaming',
+      phaseTool: 'Running tool',
+      phaseMonitor: 'Safety check',
+      phaseRetry: 'Retrying',
+      phaseError: 'Request error',
+      retryAttempt: '#',
+      retryIn: 'next retry',
+      noCapacity: '503 No capacity',
     },
   },
 };
@@ -274,6 +298,136 @@ function evalOverCDP(wsUrl, expression) {
 
 let statsServerStarted = false;
 
+function getLanguageServerLogPath() {
+  const home = os.homedir();
+  const candidates =
+    process.platform === 'darwin'
+      ? [path.join(home, 'Library', 'Logs', 'Antigravity', 'language_server.log')]
+      : process.platform === 'win32'
+        ? [
+            path.join(process.env.APPDATA || '', 'Antigravity', 'logs', 'language_server.log'),
+            path.join(process.env.LOCALAPPDATA || '', 'Antigravity', 'logs', 'language_server.log'),
+          ]
+        : [
+            path.join(home, '.config', 'Antigravity', 'logs', 'language_server.log'),
+            path.join(home, '.local', 'state', 'Antigravity', 'logs', 'language_server.log'),
+          ];
+  return candidates.find((p) => p && fs.existsSync(p)) || null;
+}
+
+function readLogTail(filePath, maxBytes = 24576) {
+  try {
+    const stat = fs.statSync(filePath);
+    const size = stat.size;
+    if (size === 0) return '';
+    const start = Math.max(0, size - maxBytes);
+    const len = size - start;
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, start);
+      return buf.toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return '';
+  }
+}
+
+function parseGlogTimestamp(line) {
+  // e.g. I1119 12:01:59.123456
+  const m = line.match(/[IWEF](\d{2})(\d{2})\s+(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?/);
+  if (!m) return null;
+  const now = new Date();
+  const dt = new Date(
+    now.getFullYear(),
+    Number(m[1]) - 1,
+    Number(m[2]),
+    Number(m[3]),
+    Number(m[4]),
+    Number(m[5]),
+    m[6] ? Number(m[6].slice(0, 3)) : 0
+  );
+  return dt.getTime();
+}
+
+function inspectLanguageServerLog(sinceMs) {
+  const logPath = getLanguageServerLogPath();
+  if (!logPath) return null;
+  const tail = readLogTail(logPath, 24576);
+  if (!tail) return null;
+
+  const lines = tail.split('\n').filter(Boolean);
+  const cutoff = Math.max(0, (sinceMs || Date.now()) - 15000);
+  const recentEvents = [];
+  let retryInfo = null;
+  let activeMonitor = null;
+  let requestSent = false;
+  let lastTraceUrl = '';
+
+  for (const raw of lines) {
+    if (raw.includes('csrf_interceptor.go')) continue;
+    const ts = parseGlogTimestamp(raw);
+    if (ts && ts < cutoff) continue;
+
+    // 1. Run retry / API failure
+    const retryMatch = raw.match(
+      /Run:\s*attempt\s+(\d+)\s+failed\s+\((.+?)\)(?:,\s*retrying in\s+([0-9.]+[a-z0-9]+))?/i
+    );
+    if (retryMatch) {
+      const errText = retryMatch[2];
+      const codeMatch = errText.match(/code\s+(\d{3})/i);
+      retryInfo = {
+        attempt: Number(retryMatch[1]),
+        error: errText,
+        code: codeMatch ? codeMatch[1] : '',
+        noCapacity: /no capacity/i.test(errText),
+        retryIn: retryMatch[3] || '',
+        ts: ts || Date.now(),
+      };
+    }
+
+    // 2. LLM safety monitor start / finish
+    const monStart = raw.match(/LLM Monitor\s+(\S+?):\s+(Starting evaluation|Calling LLM)/);
+    if (monStart) {
+      activeMonitor = monStart[1];
+    }
+    const monDone = raw.match(/Monitor\s+(\S+)\s+FINISHED:/);
+    if (monDone && activeMonitor === monDone[1]) {
+      activeMonitor = null;
+    }
+
+    // 3. Stream request reached server
+    const urlMatch = raw.match(/URL:\s+(https:\/\/\S+streamGenerateContent\S*)/);
+    if (urlMatch && (!sinceMs || !ts || ts >= sinceMs - 2000)) {
+      requestSent = true;
+      lastTraceUrl = urlMatch[1];
+      // 若发出了新的 stream 请求且晚于上一次 retry，仍保留 retryInfo 直到产生新 step
+    }
+
+    // 收集精简后的有意义日志
+    if (
+      raw.includes('run.go:') ||
+      raw.includes('http_helpers.go:') ||
+      raw.includes('llm_monitor.go:') ||
+      raw.includes('runner.go:') ||
+      raw.includes('SEND_USER_CASCADE_MESSAGE')
+    ) {
+      const clean = raw.replace(/^.*?\]\s*/, '').slice(0, 140);
+      recentEvents.push(clean);
+    }
+  }
+
+  return {
+    retryInfo,
+    activeMonitor,
+    requestSent,
+    lastTraceUrl,
+    recentLogs: recentEvents.slice(-3),
+  };
+}
+
 function computeConversationStats(convId) {
   if (!/^[a-zA-Z0-9_-]+$/.test(convId)) return null;
   const logPath = path.join(
@@ -298,10 +452,12 @@ function computeConversationStats(convId) {
   let lastModel = '';
   let modelMs = 0;
   let prevTime = null;
+  let lastStep = null;
 
   for (const line of lines) {
     try {
       const obj = JSON.parse(line);
+      if (obj.type !== 'SYSTEM_MESSAGE') lastStep = obj;
       const t = obj.created_at ? Date.parse(obj.created_at) : null;
       if (obj.type === 'USER_INPUT') {
         turns++;
@@ -323,6 +479,86 @@ function computeConversationStats(convId) {
       if (t) prevTime = t;
     } catch {
       // ignore malformed line
+    }
+  }
+
+  // 解析实时 Working 内部状态 (transcript 尾部 + language_server.log)
+  let live = { phase: 'idle', elapsedSec: 0, model: lastModel, tools: [], detail: '', recentLogs: [] };
+  if (lastStep) {
+    const stepTs = lastStep.created_at ? Date.parse(lastStep.created_at) : Date.now();
+    const elapsedSec = Math.max(0, Math.round((Date.now() - stepTs) / 1000));
+    const isToolCall =
+      lastStep.type === 'PLANNER_RESPONSE' &&
+      Array.isArray(lastStep.tool_calls) &&
+      lastStep.tool_calls.length > 0;
+    const isWorking =
+      isToolCall ||
+      lastStep.type === 'USER_INPUT' ||
+      lastStep.type === 'GENERIC' ||
+      lastStep.type === 'ERROR_MESSAGE';
+
+    if (isWorking) {
+      const ls = inspectLanguageServerLog(stepTs);
+      const recentLogs = ls?.recentLogs || [];
+
+      if (lastStep.type === 'ERROR_MESSAGE') {
+        const errStr = String(lastStep.error || '');
+        const att = errStr.match(/attempt\s+(\d+)/i);
+        const code = errStr.match(/code\s+(\d{3})/i);
+        live = {
+          phase: ls?.retryInfo ? 'retry' : 'error',
+          elapsedSec,
+          model: lastModel,
+          tools: [],
+          attempt: ls?.retryInfo?.attempt || (att ? Number(att[1]) : 0),
+          retryIn: ls?.retryInfo?.retryIn || '',
+          code: ls?.retryInfo?.code || (code ? code[1] : ''),
+          noCapacity: ls?.retryInfo?.noCapacity || /no capacity/i.test(errStr),
+          detail: ls?.retryInfo?.error || errStr.slice(0, 140),
+          recentLogs,
+        };
+      } else if (isToolCall) {
+        const tools = lastStep.tool_calls.map((tc) => tc.name).filter(Boolean);
+        live = {
+          phase: ls?.activeMonitor ? 'monitor' : 'tool',
+          elapsedSec,
+          model: lastModel,
+          tools,
+          detail: ls?.activeMonitor || tools.join(', '),
+          recentLogs,
+        };
+      } else if (ls?.retryInfo && ls.retryInfo.ts >= stepTs - 2000) {
+        live = {
+          phase: 'retry',
+          elapsedSec,
+          model: lastModel,
+          tools: [],
+          attempt: ls.retryInfo.attempt,
+          retryIn: ls.retryInfo.retryIn,
+          code: ls.retryInfo.code,
+          noCapacity: ls.retryInfo.noCapacity,
+          detail: ls.retryInfo.error,
+          recentLogs,
+        };
+      } else if (ls?.activeMonitor) {
+        live = {
+          phase: 'monitor',
+          elapsedSec,
+          model: lastModel,
+          tools: [],
+          detail: ls.activeMonitor,
+          recentLogs,
+        };
+      } else {
+        live = {
+          phase: ls?.requestSent ? 'streaming' : 'waiting',
+          elapsedSec,
+          model: lastModel,
+          tools: [],
+          detail: '',
+          recentLogs,
+        };
+      }
     }
   }
 
@@ -359,20 +595,48 @@ function computeConversationStats(convId) {
     lastContextTokens,
     maxContext,
     hasAgyContext,
+    live,
   };
 }
 
 function ensureStatsServer() {
   if (statsServerStarted) return;
   statsServerStarted = true;
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') {
+      res.statusCode = 204;
+      res.end();
+      return;
+    }
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     const url = new URL(req.url, `http://127.0.0.1:${STATS_PORT}`);
     if (url.pathname === '/stats') {
       const id = url.searchParams.get('id') || '';
       const data = computeConversationStats(id);
       res.end(JSON.stringify(data || { turns: 0, steps: 0, totalTokens: 0, outputTokens: 0, cacheHitRate: 0, tps: 0 }));
+      return;
+    }
+    if (url.pathname === '/config' && req.method === 'GET') {
+      res.end(JSON.stringify(loadConfig()));
+      return;
+    }
+    if (url.pathname === '/config' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', async () => {
+        try {
+          const next = { ...loadConfig(), ...JSON.parse(body || '{}') };
+          saveConfig(next);
+          const count = await applyConfig(next, () => {});
+          res.end(JSON.stringify({ ok: true, count, config: next }));
+        } catch (err) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ ok: false, error: err.message || String(err) }));
+        }
+      });
       return;
     }
     res.statusCode = 404;
@@ -384,10 +648,12 @@ function ensureStatsServer() {
   server.listen(STATS_PORT, '127.0.0.1');
 }
 
-function buildStatsBarInjectJS(lang = 'zh') {
+function buildStatsBarInjectJS(lang = 'zh', clickTarget = '') {
   const L = JSON.stringify(I18N[lang === 'en' ? 'en' : 'zh'].bar);
+  const CLICK_TARGET = JSON.stringify(String(clickTarget || '').trim());
   return `(() => {
     const L = ${L};
+    const CLICK_TARGET = ${CLICK_TARGET};
     if (window.__agyStatsTimer) clearInterval(window.__agyStatsTimer);
     const old = document.getElementById('agy-stats-bar');
     if (old) old.remove();
@@ -405,6 +671,74 @@ function buildStatsBarInjectJS(lang = 'zh') {
       return m > 0 ? m + ' ' + L.min + ' ' + s + ' ' + L.sec : s + ' ' + L.sec;
     };
 
+    const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    const formatLiveBadge = (live) => {
+      if (!live || live.phase === 'idle') {
+        return {
+          color: 'rgba(255,255,255,0.45)',
+          dot: 'rgba(255,255,255,0.32)',
+          barText: L.phaseIdle,
+          popText: L.phaseIdle,
+          detail: '',
+          idle: true,
+        };
+      }
+      const el = live.elapsedSec != null ? ' · ' + live.elapsedSec + 's' : '';
+      if (live.phase === 'retry' || live.phase === 'error') {
+        const barLabel = live.noCapacity ? L.noCapacity : (live.phase === 'retry' ? L.phaseRetry : L.phaseError);
+        const tag = live.noCapacity ? L.noCapacity : (live.code ? 'HTTP ' + live.code : L.phaseError);
+        const att = live.attempt ? ' #' + live.attempt : '';
+        const wait = live.retryIn ? ' (' + live.retryIn + ' ' + L.retryIn + ')' : '';
+        return {
+          color: '#f87171',
+          dot: '#f87171',
+          barText: barLabel,
+          popText: tag + att + wait,
+          detail: live.detail || '',
+          idle: false,
+        };
+      }
+      if (live.phase === 'monitor') {
+        return {
+          color: '#c084fc',
+          dot: '#c084fc',
+          barText: L.phaseMonitor,
+          popText: L.phaseMonitor + el,
+          detail: live.detail || '',
+          idle: false,
+        };
+      }
+      if (live.phase === 'tool') {
+        return {
+          color: '#fbbf24',
+          dot: '#fbbf24',
+          barText: L.phaseTool,
+          popText: L.phaseTool + el,
+          detail: (live.tools || []).join(', '),
+          idle: false,
+        };
+      }
+      if (live.phase === 'streaming') {
+        return {
+          color: '#34d399',
+          dot: '#34d399',
+          barText: L.phaseStreaming,
+          popText: L.phaseStreaming + el,
+          detail: '',
+          idle: false,
+        };
+      }
+      return {
+        color: '#60a5fa',
+        dot: '#60a5fa',
+        barText: L.phaseWaiting,
+        popText: L.phaseWaiting + el,
+        detail: '',
+        idle: false,
+      };
+    };
+
     const ensureBar = () => {
       const composer = document.querySelector('.surface-composer');
       if (!composer || !composer.parentElement) return null;
@@ -412,15 +746,31 @@ function buildStatsBarInjectJS(lang = 'zh') {
       if (!bar) {
         bar = document.createElement('div');
         bar.id = 'agy-stats-bar';
-        bar.style.cssText = 'position:relative;display:flex;align-items:center;justify-content:center;gap:12px;padding:6px 10px 2px;font-size:12px;color:rgba(255,255,255,0.55);user-select:none;font-family:system-ui,-apple-system,sans-serif;cursor:default;';
+        bar.style.cssText = 'position:relative;display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:12px;padding:6px 10px 2px;font-size:12px;color:rgba(255,255,255,0.55);user-select:none;font-family:system-ui,-apple-system,sans-serif;cursor:default;';
+
+        const popWrap = document.createElement('div');
+        popWrap.id = 'agy-stats-popover-wrap';
+        popWrap.style.cssText = 'display:none;position:absolute;bottom:100%;left:50%;transform:translateX(-50%);padding-bottom:10px;z-index:100000;pointer-events:auto;';
 
         const pop = document.createElement('div');
         pop.id = 'agy-stats-popover';
-        pop.style.cssText = 'display:none;position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:8px;width:260px;padding:12px 14px;border-radius:12px;background:rgba(28,28,34,0.96);border:1px solid rgba(255,255,255,0.12);box-shadow:0 8px 28px rgba(0,0,0,0.45);backdrop-filter:blur(12px);color:rgba(255,255,255,0.88);font-size:12px;z-index:100000;pointer-events:none;';
-        bar.appendChild(pop);
+        pop.style.cssText = 'width:280px;padding:12px 14px;border-radius:12px;background:rgba(28,28,34,0.96);border:1px solid rgba(255,255,255,0.12);box-shadow:0 8px 28px rgba(0,0,0,0.45);backdrop-filter:blur(12px);color:rgba(255,255,255,0.88);font-size:12px;user-select:text;cursor:auto;';
+        popWrap.appendChild(pop);
+        bar.appendChild(popWrap);
 
-        bar.addEventListener('mouseenter', () => { pop.style.display = 'block'; });
-        bar.addEventListener('mouseleave', () => { pop.style.display = 'none'; });
+        let hideTimer = null;
+        const showPop = () => {
+          if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+          popWrap.style.display = 'block';
+        };
+        const scheduleHide = () => {
+          if (hideTimer) clearTimeout(hideTimer);
+          hideTimer = setTimeout(() => { popWrap.style.display = 'none'; }, 250);
+        };
+        bar.addEventListener('mouseenter', showPop);
+        bar.addEventListener('mouseleave', scheduleHide);
+        popWrap.addEventListener('mouseenter', showPop);
+        popWrap.addEventListener('mouseleave', scheduleHide);
 
         composer.parentElement.appendChild(bar);
       }
@@ -453,13 +803,29 @@ function buildStatsBarInjectJS(lang = 'zh') {
         const dbSvg =
           '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:0.85;">' +
           '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>';
+        const liveBadge = formatLiveBadge(d.live);
         const pop = document.getElementById('agy-stats-popover');
         if (pop) {
           const row = (k, v) =>
             '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;">' +
             '<span style="color:rgba(255,255,255,0.55);">' + k + '</span>' +
             '<span style="font-variant-numeric:tabular-nums;">' + v + '</span></div>';
-          pop.innerHTML =
+          let liveHtml = '';
+          if (liveBadge) {
+            const isErr = d.live && (d.live.phase === 'retry' || d.live.phase === 'error');
+            const detailText = liveBadge.detail || '';
+            const detailColor = isErr ? 'rgba(248,113,113,0.9)' : 'rgba(255,255,255,0.65)';
+            const detailLine = detailText
+              ? '<div style="margin-top:5px;font-size:11px;line-height:1.4;color:' + detailColor + ';word-break:break-word;">' + esc(detailText) + '</div>'
+              : '';
+            liveHtml =
+              '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.1);">' +
+              '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">' +
+              '<span style="color:rgba(255,255,255,0.55);flex-shrink:0;">' + L.liveTitle + '</span>' +
+              '<span style="color:' + liveBadge.color + ';font-weight:500;text-align:right;">' + esc(liveBadge.popText) + '</span></div>' +
+              detailLine + '</div>';
+          }
+          const nextPopHtml =
             '<div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:8px;margin-bottom:6px;border-bottom:1px solid rgba(255,255,255,0.1);font-weight:600;">' +
             '<span style="display:inline-flex;align-items:center;gap:6px;">' + gaugeSvg + L.popTitle + '</span><span>' + d.turns + ' ' + L.turns + ' ' + d.steps + ' ' + L.steps + '</span></div>' +
             row(L.modelTime, formatDuration(d.modelSeconds)) +
@@ -467,37 +833,52 @@ function buildStatsBarInjectJS(lang = 'zh') {
             row(L.outTok, formatTok(d.outputTokens)) +
             row(L.totTok, formatTok(d.totalTokens)) +
             row(L.cacheRate, d.cacheHitRate + '%') +
-            row(L.ctxUsage, formatTok(d.lastContextTokens || 0) + ' / ' + formatTok(d.maxContext || 512000) + ' (' + pct + '%)');
+            row(L.ctxUsage, formatTok(d.lastContextTokens || 0) + ' / ' + formatTok(d.maxContext || 512000) + ' (' + pct + '%)') +
+            liveHtml;
+          if (pop.dataset.lastHtml !== nextPopHtml) {
+            pop.dataset.lastHtml = nextPopHtml;
+            pop.innerHTML = nextPopHtml;
+          }
         }
         let summary = document.getElementById('agy-stats-summary');
         if (!summary) {
           summary = document.createElement('div');
           summary.id = 'agy-stats-summary';
-          summary.style.cssText = 'display:flex;align-items:center;gap:12px;';
+          summary.style.cssText = 'display:flex;align-items:center;flex-wrap:wrap;justify-content:center;gap:12px;';
           bar.appendChild(summary);
         }
+        const liveSpan =
+          '<span style="display:inline-flex;align-items:center;gap:6px;color:' + liveBadge.color + ';font-weight:' + (liveBadge.idle ? '400' : '500') + ';">' +
+          '<span style="width:6px;height:6px;border-radius:50%;background:' + liveBadge.dot + ';display:inline-block;"></span>' +
+          esc(liveBadge.barText) + '</span><span style="opacity:0.35">|</span>';
+        summary.style.cursor = CLICK_TARGET ? 'pointer' : 'default';
+        summary.title = CLICK_TARGET || '';
         summary.innerHTML =
+          liveSpan +
           '<span style="display:inline-flex;align-items:center;gap:5px;">' + gaugeSvg + d.turns + ' ' + L.turns + ' ' + d.steps + ' ' + L.steps + ' · ' + (d.tps || '--') + ' tok/s</span>' +
           '<span style="opacity:0.35">|</span>' +
           '<span style="display:inline-flex;align-items:center;gap:5px;">' + dbSvg + formatTok(d.totalTokens) + ' tok · ' + L.cacheHit + ' ' + d.cacheHitRate + '%</span>' +
           '<span style="opacity:0.35">|</span>' +
-          '<span id="agy-context-trigger" title="' + (d.hasAgyContext ? L.openContext : '') + '" style="display:inline-flex;align-items:center;gap:5px;' + (d.hasAgyContext ? 'cursor:pointer;' : '') + '">' + ringSvg + pct + '%</span>';
-        const trigger = document.getElementById('agy-context-trigger');
-        if (trigger && d.hasAgyContext) {
-          trigger.onclick = () => {
-            const u = new URL(location.href);
-            u.searchParams.set('tab', 'sidecar__context/context_panel__/');
-            history.pushState({}, '', u.toString());
-            window.dispatchEvent(new PopStateEvent('popstate'));
-          };
-        }
+          '<span id="agy-context-trigger" style="display:inline-flex;align-items:center;gap:5px;">' + ringSvg + pct + '%</span>';
+        summary.onclick = CLICK_TARGET
+          ? () => {
+              if (/^https?:\\/\\//i.test(CLICK_TARGET)) {
+                window.open(CLICK_TARGET, '_blank');
+                return;
+              }
+              const u = new URL(location.href);
+              u.searchParams.set('tab', CLICK_TARGET);
+              history.pushState({}, '', u.toString());
+              window.dispatchEvent(new PopStateEvent('popstate'));
+            }
+          : null;
       } catch {
         bar.textContent = L.disconnected;
       }
     };
 
     refresh();
-    window.__agyStatsTimer = setInterval(refresh, 2000);
+    window.__agyStatsTimer = setInterval(refresh, 1000);
     return 'stats-ok';
   })()`;
 }
@@ -526,20 +907,141 @@ const CLEAN_INPUT_CSS = `
   }
 `;
 
+function buildEscCancelInjectJS(lang = 'zh') {
+  const hintText = JSON.stringify(lang === 'en' ? 'Press ESC again to cancel' : '再按一次 ESC 取消对话');
+  return `(() => {
+    if (window.__agyEscCancelHandler) {
+      window.removeEventListener('keydown', window.__agyEscCancelHandler, true);
+    }
+    if (window.__agyEscToastTimer) {
+      clearTimeout(window.__agyEscToastTimer);
+      window.__agyEscToastTimer = null;
+    }
+    const oldToast = document.getElementById('agy-esc-toast');
+    if (oldToast) oldToast.remove();
+
+    const HINT_TEXT = ${hintText};
+    let armedUntil = 0;
+
+    const hideToast = () => {
+      armedUntil = 0;
+      if (window.__agyEscToastTimer) {
+        clearTimeout(window.__agyEscToastTimer);
+        window.__agyEscToastTimer = null;
+      }
+      const el = document.getElementById('agy-esc-toast');
+      if (el) {
+        el.style.opacity = '0';
+        el.style.transform = 'translate(-50%, -46%) scale(0.97)';
+      }
+    };
+
+    const showToast = (composer) => {
+      let el = document.getElementById('agy-esc-toast');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'agy-esc-toast';
+        el.style.cssText =
+          'position:fixed;z-index:100001;pointer-events:none;padding:9px 16px;border-radius:999px;' +
+          'background:rgba(24,24,30,0.92);border:1px solid rgba(255,255,255,0.14);' +
+          'box-shadow:0 8px 28px rgba(0,0,0,0.45);backdrop-filter:blur(12px);' +
+          'color:rgba(255,255,255,0.92);font-size:13px;font-weight:500;letter-spacing:0.01em;' +
+          'font-family:system-ui,-apple-system,sans-serif;white-space:nowrap;' +
+          'opacity:0;transform:translate(-50%,-46%) scale(0.97);transition:opacity 0.16s ease,transform 0.16s ease;';
+        document.body.appendChild(el);
+      }
+      const r = composer.getBoundingClientRect();
+      el.style.left = Math.round(r.left + r.width / 2) + 'px';
+      el.style.top = Math.round(r.top / 2) + 'px';
+      el.textContent = HINT_TEXT;
+      requestAnimationFrame(() => {
+        el.style.opacity = '1';
+        el.style.transform = 'translate(-50%, -50%) scale(1)';
+      });
+      if (window.__agyEscToastTimer) clearTimeout(window.__agyEscToastTimer);
+      window.__agyEscToastTimer = setTimeout(hideToast, 2000);
+    };
+
+    window.__agyEscCancelHandler = (e) => {
+      if (e.key !== 'Escape' || e.isComposing || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      if (document.querySelector('[role="dialog"], [role="menu"], [role="listbox"], [data-radix-popper-content-wrapper]')) {
+        return;
+      }
+      const composer = document.querySelector('.surface-composer');
+      if (!composer) return;
+      const btn = composer.querySelector('button[data-tooltip-id="input-send-button-cancel-tooltip"], button[aria-label^="Cancel"]');
+      if (!btn || btn.disabled) {
+        hideToast();
+        return;
+      }
+      e.preventDefault();
+      const now = Date.now();
+      if (now < armedUntil) {
+        hideToast();
+        btn.click();
+      } else {
+        armedUntil = now + 2000;
+        showToast(composer);
+      }
+    };
+    window.addEventListener('keydown', window.__agyEscCancelHandler, true);
+    return 'esc-ok';
+  })()`;
+}
+
+function buildEscCancelRemoveJS() {
+  return `(() => {
+    if (window.__agyEscCancelHandler) {
+      window.removeEventListener('keydown', window.__agyEscCancelHandler, true);
+      window.__agyEscCancelHandler = null;
+    }
+    if (window.__agyEscToastTimer) {
+      clearTimeout(window.__agyEscToastTimer);
+      window.__agyEscToastTimer = null;
+    }
+    const toast = document.getElementById('agy-esc-toast');
+    if (toast) toast.remove();
+    return 'esc-removed';
+  })()`;
+}
+
+async function resolveWallpaperBgUrl(imagePath) {
+  const raw = String(imagePath || '').trim();
+  if (!raw) throw new Error('已启用注入背景，但未设置图片路径或 URL');
+
+  if (raw.startsWith('data:image/')) {
+    return raw;
+  }
+
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const res = await fetch(raw, { signal: AbortSignal.timeout(15000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const ct = (res.headers.get('content-type') || '').split(';')[0].trim();
+      const mime = ct.startsWith('image/') ? ct : (MIME_MAP[path.extname(new URL(raw).pathname).toLowerCase()] || 'image/png');
+      const buf = Buffer.from(await res.arrayBuffer());
+      return `data:${mime};base64,${buf.toString('base64')}`;
+    } catch (err) {
+      // 网络拉取失败时回退为直接 URL 引用
+      return raw;
+    }
+  }
+
+  const imgPath = path.resolve(raw);
+  if (!fs.existsSync(imgPath)) {
+    throw new Error(`找不到图片文件: ${imgPath}`);
+  }
+  const ext = path.extname(imgPath).toLowerCase();
+  const mime = MIME_MAP[ext] || 'image/png';
+  const base64 = fs.readFileSync(imgPath).toString('base64');
+  return `data:${mime};base64,${base64}`;
+}
+
 async function applyConfig(cfg, logFn = console.log) {
   const parts = [];
 
   if (cfg.enableWallpaper) {
-    if (!cfg.imagePath) {
-      throw new Error('已启用注入背景，但未设置图片路径');
-    }
-    const imgPath = path.resolve(cfg.imagePath);
-    if (!fs.existsSync(imgPath)) {
-      throw new Error(`找不到图片文件: ${imgPath}`);
-    }
-    const ext = path.extname(imgPath).toLowerCase();
-    const mime = MIME_MAP[ext] || 'image/png';
-    const base64 = fs.readFileSync(imgPath).toString('base64');
+    const bgUrl = await resolveWallpaperBgUrl(cfg.imagePath);
     const opacity = Math.min(1, Math.max(0, Number(cfg.opacity ?? 0.12)));
 
     const wpCss = `
@@ -549,7 +1051,7 @@ async function applyConfig(cfg, logFn = console.log) {
         inset: 0;
         z-index: 99999;
         pointer-events: none;
-        background-image: url("data:${mime};base64,${base64}");
+        background-image: url(${JSON.stringify(bgUrl)});
         background-size: cover;
         background-position: center;
         background-repeat: no-repeat;
@@ -569,9 +1071,15 @@ async function applyConfig(cfg, logFn = console.log) {
 
   if (cfg.enableStatsBar) {
     ensureStatsServer();
-    parts.push(buildStatsBarInjectJS(cfg.lang));
+    parts.push(buildStatsBarInjectJS(cfg.lang, cfg.statsClickTarget));
   } else {
     parts.push(buildStatsBarRemoveJS());
+  }
+
+  if (cfg.enableEscCancel) {
+    parts.push(buildEscCancelInjectJS(cfg.lang));
+  } else {
+    parts.push(buildEscCancelRemoveJS());
   }
 
   const expression = parts.join('; ');
@@ -781,6 +1289,44 @@ async function runTUI() {
   process.stdin.on('keypress', onKeypress);
 }
 
+export function startWatchLoop(intervalMs = 3000) {
+  ensureStatsServer();
+
+  const tick = async () => {
+    try {
+      const currentCfg = loadConfig();
+      if (
+        !currentCfg.enableWallpaper &&
+        !currentCfg.enableInputStyle &&
+        !currentCfg.enableStatsBar &&
+        !currentCfg.enableEscCancel
+      ) {
+        return;
+      }
+      const targets = await getTargets();
+      if (!targets) return;
+      const pages = targets.filter(
+        (t) => t.type === 'page' && t.webSocketDebuggerUrl && !t.url.startsWith('data:')
+      );
+      for (const page of pages) {
+        const check = await evalOverCDP(
+          page.webSocketDebuggerUrl,
+          `Boolean(document.getElementById(${JSON.stringify(WALLPAPER_STYLE_ID)}) || document.getElementById(${JSON.stringify(UI_STYLE_ID)}) || document.getElementById('agy-stats-bar') || window.__agyEscCancelHandler)`
+        );
+        if (check && check.result && check.result.value === false) {
+          await applyConfig(currentCfg, () => {});
+          break;
+        }
+      }
+    } catch {
+      // CDP 未就绪或页面切换中，下个周期重试
+    }
+  };
+
+  tick();
+  return setInterval(tick, intervalMs);
+}
+
 async function runWatchMode() {
   // 兼容作为 Antigravity 插件 MCP stdio 进程被拉起时的基础 JSON-RPC 握手
   if (!process.stdin.isTTY) {
@@ -818,35 +1364,10 @@ async function runWatchMode() {
     });
   }
 
-  const cfg = loadConfig();
-  if (cfg.enableStatsBar) ensureStatsServer();
-
-  const tick = async () => {
-    try {
-      const currentCfg = loadConfig();
-      const targets = await getTargets();
-      if (!targets) return;
-      const pages = targets.filter(
-        (t) => t.type === 'page' && t.webSocketDebuggerUrl && !t.url.startsWith('data:')
-      );
-      for (const page of pages) {
-        const check = await evalOverCDP(
-          page.webSocketDebuggerUrl,
-          `Boolean(document.getElementById(${JSON.stringify(WALLPAPER_STYLE_ID)}) || document.getElementById(${JSON.stringify(UI_STYLE_ID)}) || document.getElementById('agy-stats-bar'))`
-        );
-        if (check && check.result && check.result.value === false) {
-          await applyConfig(currentCfg, () => {});
-          break;
-        }
-      }
-    } catch {
-      // CDP 未就绪或页面切换中，下个周期重试
-    }
-  };
-
-  await tick();
-  setInterval(tick, 3000);
+  startWatchLoop(3000);
 }
+
+export { loadConfig, saveConfig, applyConfig, ensureStatsServer };
 
 // ---------------- 入口 ----------------
 
@@ -867,6 +1388,12 @@ async function main() {
   }
 
   const cfg = loadConfig();
+  if (arg1 === '--apply') {
+    const count = await applyConfig(cfg, () => {});
+    console.log(JSON.stringify({ ok: true, count }));
+    return;
+  }
+
   if (arg1 === '--clear') {
     cfg.enableWallpaper = false;
     cfg.enableInputStyle = true;
@@ -891,7 +1418,12 @@ async function main() {
   console.log(`[ok] 已注入壁纸到 ${count} 个窗口`);
 }
 
-main().catch((err) => {
-  console.error('[error]', err.message || err);
-  process.exit(1);
-});
+const isDirectRun =
+  process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error('[error]', err.message || err);
+    process.exit(1);
+  });
+}
