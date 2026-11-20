@@ -4,16 +4,23 @@
  * 支持 macOS / Windows / Linux (需 Node.js >= 22，原生支持 fetch & WebSocket)
  *
  * 用法:
- *   node agy-wallpaper.mjs                     # 启动交互式 TUI 配置界面
- *   node agy-wallpaper.mjs <图片路径> [透明度]   # 命令行直接注入壁纸 + 输入框样式改善
- *   node agy-wallpaper.mjs --clear             # 仅清除壁纸，保留输入框样式改善
- *   node agy-wallpaper.mjs --clear-all         # 清除所有注入样式
+ *   node agy-desktop-qol.mjs                     # 启动交互式 TUI 配置界面
+ *   node agy-desktop-qol.mjs <图片路径> [透明度]   # 命令行直接注入壁纸 + 输入框样式改善
+ *   node agy-desktop-qol.mjs --clear             # 仅清除壁纸，保留输入框样式改善
+ *   node agy-desktop-qol.mjs --clear-all         # 清除所有注入样式
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
+import crypto from 'node:crypto';
+let nodeSqlite = null;
+try {
+  nodeSqlite = await import('node:sqlite');
+} catch {
+  // Node < 22.5: 回退为推断上限
+}
 import readline from 'node:readline';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +34,8 @@ const CDP_URL = `http://127.0.0.1:${CDP_PORT}`;
 const WALLPAPER_STYLE_ID = 'agy-custom-wallpaper';
 const UI_STYLE_ID = 'agy-clean-ui';
 const STATS_SCRIPT_ID = 'agy-stats-bar-script';
+
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
 const MIME_MAP = {
   '.png': 'image/png',
@@ -65,6 +74,8 @@ const I18N = {
     opacity: '背景透明度',
     enableFlat: '启用样式扁平化 (全局去阴影叠加 + 极简细边框)',
     enableStats: '启用底部会话统计栏 (轮数/步数 · tok/s · 缓存命中率)',
+    statsBarItems: '底栏显示项 (status, turns, tokens, context)',
+    promptStatsItems: '输入底栏显示项，逗号分隔 (status, turns, tokens, context)',
     apply: '▶ 应用配置并注入到 Antigravity Desktop',
     clearAll: '✕ 清除所有注入样式 (恢复原生)',
     quit: '退出',
@@ -115,6 +126,8 @@ const I18N = {
     opacity: 'Wallpaper Opacity',
     enableFlat: 'Enable Style Flattening (No Shadows + Hairline Borders)',
     enableStats: 'Enable Bottom Stats Bar (Turns/Steps · tok/s · Cache Hit)',
+    statsBarItems: 'Bottom Bar Items (status, turns, tokens, context)',
+    promptStatsItems: 'Enter bottom bar items, comma-separated (status, turns, tokens, context)',
     apply: '▶ Apply & Inject into Antigravity Desktop',
     clearAll: '✕ Clear All Injected Styles (Restore Default)',
     quit: 'Quit',
@@ -216,9 +229,24 @@ function launchAntigravity() {
   spawn(linuxBin, args, { detached: true, stdio: 'ignore' }).unref();
 }
 
-async function ensureCDPReady(logFn = console.log) {
+// 通过 CDP /json/version 的 User-Agent 获取宿主 Antigravity 版本号
+async function getHostVersion() {
+  try {
+    const res = await fetch(`${CDP_URL}/json/version`, { signal: AbortSignal.timeout(2000) });
+    const j = await res.json();
+    const m = String(j['User-Agent'] || '').match(/Antigravity\/([\d.]+)/);
+    return { version: m ? m[1] : null, chrome: j.Browser || null };
+  } catch {
+    return null;
+  }
+}
+
+async function ensureCDPReady(logFn = console.log, launch = true) {
   let targets = await getTargets();
   if (targets) return targets;
+  if (!launch) {
+    throw new Error(`未检测到 CDP 端口 ${CDP_PORT}，请以 --remote-debugging-port=${CDP_PORT} 启动 Antigravity`);
+  }
 
   logFn(`[info] 未检测到 CDP 端口 ${CDP_PORT}，正在启动 Antigravity Desktop...`);
   launchAntigravity();
@@ -283,7 +311,10 @@ function evalOverCDP(wsUrl, expression) {
         if (msg.id === 1) {
           clearTimeout(timer);
           ws.close();
-          resolve(msg.result);
+          if (msg.error) reject(new Error(msg.error.message || 'CDP 错误'));
+          else if (msg.result && msg.result.exceptionDetails) {
+            reject(new Error('注入脚本异常: ' + (msg.result.exceptionDetails.exception?.description || msg.result.exceptionDetails.text || '')));
+          } else resolve(msg.result);
         }
       } catch {
         // ignore
@@ -298,6 +329,26 @@ function evalOverCDP(wsUrl, expression) {
 }
 
 let statsServerStarted = false;
+
+const TOKEN_PATH = path.join(os.homedir(), '.gemini', 'antigravity', 'qol-stats-token');
+let cachedToken = null;
+function getStatsToken() {
+  if (cachedToken) return cachedToken;
+  try {
+    const t = fs.readFileSync(TOKEN_PATH, 'utf8').trim();
+    if (t.length >= 32) return (cachedToken = t);
+  } catch {
+    // generate below
+  }
+  const t = crypto.randomBytes(24).toString('hex');
+  try {
+    fs.mkdirSync(path.dirname(TOKEN_PATH), { recursive: true });
+    fs.writeFileSync(TOKEN_PATH, t, { mode: 0o600 });
+  } catch {
+    // 无法持久化则仅本进程有效
+  }
+  return (cachedToken = t);
+}
 
 function getLanguageServerLogPath() {
   const home = os.homedir();
@@ -429,6 +480,168 @@ function inspectLanguageServerLog(sinceMs) {
   };
 }
 
+const transcriptCache = new Map();
+
+function newTranscriptState() {
+  return {
+    offset: 0, turns: 0, steps: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0,
+    lastContextTokens: 0, lastModel: '', modelMs: 0, pendingTs: null, lastStep: null,
+  };
+}
+
+// 按字节偏移增量解析 transcript.jsonl：只处理新增的完整行
+function readTranscriptIncremental(convId, logPath) {
+  let size;
+  try {
+    size = fs.statSync(logPath).size;
+  } catch {
+    return null;
+  }
+  let st = transcriptCache.get(convId);
+  if (!st || size < st.offset) {
+    st = newTranscriptState();
+    transcriptCache.set(convId, st);
+    if (transcriptCache.size > 50) transcriptCache.delete(transcriptCache.keys().next().value);
+  }
+  if (size > st.offset) {
+    const fd = fs.openSync(logPath, 'r');
+    let buf;
+    try {
+      buf = Buffer.alloc(size - st.offset);
+      fs.readSync(fd, buf, 0, buf.length, st.offset);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const lastNl = buf.lastIndexOf(0x0a);
+    if (lastNl >= 0) {
+      const text = buf.subarray(0, lastNl + 1).toString('utf8');
+      st.offset += lastNl + 1;
+      for (const line of text.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const obj = JSON.parse(line);
+          if (obj.type !== 'SYSTEM_MESSAGE') st.lastStep = obj;
+          const t = obj.created_at ? Date.parse(obj.created_at) : null;
+          if (obj.type === 'USER_INPUT') {
+            st.turns++;
+          } else if (obj.type === 'PLANNER_RESPONSE') {
+            st.steps++;
+            if (obj.model) st.lastModel = String(obj.model);
+            const stepIn = Number(obj.input_tokens || 0);
+            const stepCache = Number(obj.cache_read_tokens || 0);
+            const stepOut = Number(obj.output_tokens || 0);
+            st.inputTokens += stepIn;
+            st.cacheReadTokens += stepCache;
+            st.outputTokens += stepOut;
+            st.lastContextTokens = stepIn + stepCache + stepOut;
+          }
+          // PLANNER_RESPONSE 的 created_at 是该步开始时间; 生成耗时 = 下一条记录的时间 - 本步时间
+          if (t && st.pendingTs && t > st.pendingTs) {
+            const dt = t - st.pendingTs;
+            if (dt < 120000) st.modelMs += dt;
+            st.pendingTs = null;
+          }
+          if (t && obj.type === 'PLANNER_RESPONSE' && Number(obj.output_tokens || 0) > 0) st.pendingTs = t;
+        } catch {
+          // ignore malformed line
+        }
+      }
+    }
+  }
+  return st;
+}
+
+// ---- 最小 protobuf 解码 + .db 上下文上限读取 (结果按 mtime/size 缓存) ----
+function decodeProto(bytes) {
+  const out = new Map();
+  let o = 0;
+  const varint = () => {
+    let v = 0n;
+    for (let sh = 0n; sh < 70n; sh += 7n) {
+      if (o >= bytes.length) throw new Error('eof');
+      const b = bytes[o++];
+      v |= BigInt(b & 127) << sh;
+      if (b < 128) return Number(v);
+    }
+    throw new Error('varint');
+  };
+  while (o < bytes.length) {
+    const tag = varint();
+    const field = Math.floor(tag / 8);
+    const wire = tag % 8;
+    if (!field) break;
+    if (wire === 0) {
+      (out.get(field) || out.set(field, []).get(field)).push(varint());
+    } else if (wire === 2) {
+      const len = varint();
+      if (len > bytes.length - o) break;
+      (out.get(field) || out.set(field, []).get(field)).push(bytes.subarray(o, o + len));
+      o += len;
+    } else if (wire === 1) o += 8;
+    else if (wire === 5) o += 4;
+    else break;
+  }
+  return out;
+}
+
+// 已验证过 protobuf 字段路径的宿主版本 (major.minor)
+const KNOWN_PROTO_VERSIONS = ['2.33'];
+let hostVersionCache = { version: null, at: 0 };
+
+function refreshHostVersion() {
+  if (Date.now() - hostVersionCache.at < 60000) return;
+  hostVersionCache.at = Date.now();
+  getHostVersion().then((h) => {
+    if (h?.version) hostVersionCache.version = h.version;
+  }).catch(() => {});
+}
+
+function isKnownProtoVersion() {
+  const v = hostVersionCache.version;
+  return Boolean(v) && KNOWN_PROTO_VERSIONS.includes(v.split('.').slice(0, 2).join('.'));
+}
+
+const dbLimitCache = new Map();
+
+function readDbMaxTokenLimit(convId) {
+  refreshHostVersion();
+  // 版本匹配: 直接采信; 版本未知/不匹配: 尝试读取，但值必须在合理范围内，否则放弃
+  const known = isKnownProtoVersion();
+  const dbPath = path.join(os.homedir(), '.gemini', 'antigravity', 'conversations', `${convId}.db`);
+  let fp;
+  try {
+    const a = fs.statSync(dbPath);
+    let w = { mtimeMs: 0, size: 0 };
+    try { w = fs.statSync(dbPath + '-wal'); } catch { /* no wal */ }
+    fp = `${a.mtimeMs}:${a.size}:${w.mtimeMs}:${w.size}`;
+  } catch {
+    return 0;
+  }
+  const hit = dbLimitCache.get(convId);
+  if (hit && hit.fp === fp && hit.known === known) return hit.limit;
+  let limit = 0;
+  let db;
+  try {
+    if (!nodeSqlite) return 0;
+    db = new nodeSqlite.DatabaseSync(dbPath, { readOnly: true });
+    const row = db.prepare('SELECT data FROM executor_metadata ORDER BY rowid DESC LIMIT 1').get();
+    if (row && row.data instanceof Uint8Array) {
+      // 路径: 根字段 10 -> 嵌套字段 2 -> varint 字段 5 (与官方 context 插件一致)
+      const f10 = decodeProto(row.data).get(10)?.[0];
+      const f2 = f10 instanceof Uint8Array ? decodeProto(f10).get(2)?.[0] : null;
+      const v = f2 instanceof Uint8Array ? decodeProto(f2).get(5)?.[0] : 0;
+      if (typeof v === 'number' && v > 0 && (known || (v >= 32768 && v <= 20000000))) limit = v;
+    }
+  } catch {
+    // 数据库被锁或结构变化: 回退到推断值
+  } finally {
+    try { db?.close(); } catch { /* ignore */ }
+  }
+  dbLimitCache.set(convId, { fp, limit, known });
+  if (dbLimitCache.size > 100) dbLimitCache.delete(dbLimitCache.keys().next().value);
+  return limit;
+}
+
 function computeConversationStats(convId) {
   if (!/^[a-zA-Z0-9_-]+$/.test(convId)) return null;
   const logPath = path.join(
@@ -443,45 +656,9 @@ function computeConversationStats(convId) {
   );
   if (!fs.existsSync(logPath)) return null;
 
-  const lines = fs.readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean);
-  let turns = 0;
-  let steps = 0;
-  let inputTokens = 0;
-  let cacheReadTokens = 0;
-  let outputTokens = 0;
-  let lastContextTokens = 0;
-  let lastModel = '';
-  let modelMs = 0;
-  let prevTime = null;
-  let lastStep = null;
-
-  for (const line of lines) {
-    try {
-      const obj = JSON.parse(line);
-      if (obj.type !== 'SYSTEM_MESSAGE') lastStep = obj;
-      const t = obj.created_at ? Date.parse(obj.created_at) : null;
-      if (obj.type === 'USER_INPUT') {
-        turns++;
-      } else if (obj.type === 'PLANNER_RESPONSE') {
-        steps++;
-        if (obj.model) lastModel = String(obj.model);
-        const stepIn = Number(obj.input_tokens || 0);
-        const stepCache = Number(obj.cache_read_tokens || 0);
-        const stepOut = Number(obj.output_tokens || 0);
-        inputTokens += stepIn;
-        cacheReadTokens += stepCache;
-        outputTokens += stepOut;
-        lastContextTokens = stepIn + stepCache + stepOut;
-        if (t && prevTime && t > prevTime) {
-          const dt = t - prevTime;
-          if (dt > 0 && dt < 120000) modelMs += dt;
-        }
-      }
-      if (t) prevTime = t;
-    } catch {
-      // ignore malformed line
-    }
-  }
+  const st = readTranscriptIncremental(convId, logPath);
+  if (!st) return null;
+  const { turns, steps, inputTokens, cacheReadTokens, outputTokens, lastContextTokens, lastModel, modelMs, lastStep } = st;
 
   // 解析实时 Working 内部状态 (transcript 尾部 + language_server.log)
   let live = { phase: 'idle', elapsedSec: 0, model: lastModel, tools: [], detail: '', recentLogs: [] };
@@ -565,17 +742,8 @@ function computeConversationStats(convId) {
     }
   }
 
-  let maxContext = 512000;
-  try {
-    const pbtxtPath = path.join(os.homedir(), '.gemini', 'antigravity', 'conversations', `${convId}.pbtxt`);
-    if (fs.existsSync(pbtxtPath)) {
-      const head = fs.readFileSync(pbtxtPath, 'utf8').slice(0, 65536);
-      const m = head.match(/max_token_limit:\s*(\d+)/);
-      if (m && Number(m[1]) > 0) maxContext = Number(m[1]);
-    }
-  } catch {
-    // fallback 512000
-  }
+  // 与官方 context 插件一致: .db 会话里没有明文 max_token_limit，按模型推断 Antigravity 的默认上限
+  const maxContext = inferContextLimit(lastModel, convId);
   const totalTokens = inputTokens + cacheReadTokens + outputTokens;
   const promptTokens = inputTokens + cacheReadTokens;
   const cacheHitRate = promptTokens > 0 ? Math.round((cacheReadTokens / promptTokens) * 100) : 0;
@@ -602,51 +770,55 @@ function computeConversationStats(convId) {
   };
 }
 
+function inferContextLimit(model, convId) {
+  const dbLimit = readDbMaxTokenLimit(convId);
+  if (dbLimit > 0) return dbLimit;
+  // 旧版 .pbtxt 会话仍可直接读取
+  try {
+    const pbtxtPath = path.join(os.homedir(), '.gemini', 'antigravity', 'conversations', `${convId}.pbtxt`);
+    if (fs.existsSync(pbtxtPath)) {
+      const m = fs.readFileSync(pbtxtPath, 'utf8').slice(0, 65536).match(/max_token_limit:\s*(\d+)/);
+      if (m && Number(m[1]) > 0) return Number(m[1]);
+    }
+  } catch {
+    // fall through
+  }
+  const id = String(model || '').toLowerCase().replace(/\s+/g, '-');
+  if (id.includes('orchestrator')) return 512000;
+  let modelMax = 1048576;
+  if (/gpt-oss-120b/.test(id)) modelMax = 131072;
+  else if (/claude-(sonnet|opus|haiku)-4-5|claude-(sonnet|opus)-4(-|$)/.test(id)) modelMax = 200000;
+  return Math.min(modelMax, 256000);
+}
+
 function ensureStatsServer() {
   if (statsServerStarted) return;
   statsServerStarted = true;
   const server = http.createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') {
-      res.statusCode = 204;
-      res.end();
-      return;
-    }
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     const url = new URL(req.url, `http://127.0.0.1:${STATS_PORT}`);
-    if (url.pathname === '/stats') {
+    if (req.method === 'GET' && url.pathname === '/stats') {
+      getStatsToken();
+      if (url.searchParams.get('t') !== getStatsToken()) {
+        res.statusCode = 403;
+        res.end('{}');
+        return;
+      }
       const id = url.searchParams.get('id') || '';
       const data = computeConversationStats(id);
       res.end(JSON.stringify(data || { turns: 0, steps: 0, totalTokens: 0, outputTokens: 0, cacheHitRate: 0, tps: 0 }));
       return;
     }
-    if (url.pathname === '/config' && req.method === 'GET') {
-      res.end(JSON.stringify(loadConfig()));
-      return;
-    }
-    if (url.pathname === '/config' && req.method === 'POST') {
-      let body = '';
-      req.on('data', (c) => { body += c; });
-      req.on('end', async () => {
-        try {
-          const next = { ...loadConfig(), ...JSON.parse(body || '{}') };
-          saveConfig(next);
-          const count = await applyConfig(next, () => {});
-          res.end(JSON.stringify({ ok: true, count, config: next }));
-        } catch (err) {
-          res.statusCode = 400;
-          res.end(JSON.stringify({ ok: false, error: err.message || String(err) }));
-        }
-      });
-      return;
-    }
     res.statusCode = 404;
     res.end('{}');
   });
-  server.on('error', () => {
-    // 端口已被其他实例占用时静默复用
+  server.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE') {
+      console.error(`[warn] 统计端口 ${STATS_PORT} 已被占用，可能已有另一实例在运行`);
+    } else {
+      console.error('[warn] 统计服务错误:', err && err.message);
+    }
   });
   server.listen(STATS_PORT, '127.0.0.1');
 }
@@ -655,7 +827,7 @@ function normalizeStatsBarItems(items) {
   const valid = new Set(['status', 'turns', 'tokens', 'context']);
   if (!Array.isArray(items)) return [...DEFAULT_CONFIG.statsBarItems];
   const filtered = items.map((s) => String(s).trim().toLowerCase()).filter((s) => valid.has(s));
-  return filtered.length > 0 ? filtered : [...DEFAULT_CONFIG.statsBarItems];
+  return [...new Set(filtered)];
 }
 
 function buildStatsBarInjectJS(lang = 'zh', clickTarget = '', statsBarItems = DEFAULT_CONFIG.statsBarItems) {
@@ -789,16 +961,27 @@ function buildStatsBarInjectJS(lang = 'zh', clickTarget = '', statsBarItems = DE
       return bar;
     };
 
+    const ensureSummary = (bar) => {
+      let summary = document.getElementById('agy-stats-summary');
+      if (!summary) {
+        summary = document.createElement('div');
+        summary.id = 'agy-stats-summary';
+        summary.style.cssText = 'display:flex;align-items:center;flex-wrap:wrap;justify-content:center;gap:12px;';
+        bar.appendChild(summary);
+      }
+      return summary;
+    };
+
     const refresh = async () => {
       const bar = ensureBar();
       if (!bar) return;
       const m = location.pathname.match(/\\/c\\/([a-zA-Z0-9_-]+)/);
       if (!m) {
-        bar.textContent = L.waiting;
+        ensureSummary(bar).textContent = L.waiting;
         return;
       }
       try {
-        const res = await fetch('http://127.0.0.1:${STATS_PORT}/stats?id=' + m[1]);
+        const res = await fetch('http://127.0.0.1:${STATS_PORT}/stats?t=${getStatsToken()}&id=' + m[1]);
         const d = await res.json();
         const pct = d.contextPct ?? 0;
         const r = 5;
@@ -852,13 +1035,7 @@ function buildStatsBarInjectJS(lang = 'zh', clickTarget = '', statsBarItems = DE
             pop.innerHTML = nextPopHtml;
           }
         }
-        let summary = document.getElementById('agy-stats-summary');
-        if (!summary) {
-          summary = document.createElement('div');
-          summary.id = 'agy-stats-summary';
-          summary.style.cssText = 'display:flex;align-items:center;flex-wrap:wrap;justify-content:center;gap:12px;';
-          bar.appendChild(summary);
-        }
+        const summary = ensureSummary(bar);
         const liveSpan =
           '<span style="display:inline-flex;align-items:center;gap:6px;color:' + liveBadge.color + ';font-weight:' + (liveBadge.idle ? '400' : '500') + ';">' +
           '<span style="width:6px;height:6px;border-radius:50%;background:' + liveBadge.dot + ';display:inline-block;"></span>' +
@@ -886,7 +1063,7 @@ function buildStatsBarInjectJS(lang = 'zh', clickTarget = '', statsBarItems = DE
             }
           : null;
       } catch {
-        bar.textContent = L.disconnected;
+        ensureSummary(bar).textContent = L.disconnected;
       }
     };
 
@@ -923,6 +1100,10 @@ const WIN_MEDIA_MODAL_CSS =
 const CLEAN_INPUT_CSS = `
   *, *::before, *::after {
     box-shadow: none !important;
+  }
+  :focus-visible:not([contenteditable], textarea, input, [role="textbox"]) {
+    outline: 2px solid light-dark(rgba(10, 10, 12, 0.55), rgba(255, 255, 255, 0.6)) !important;
+    outline-offset: 1px !important;
   }
   .surface-composer,
   .agy-user-bubble,
@@ -1061,6 +1242,7 @@ async function resolveWallpaperBgUrl(imagePath) {
       const ct = (res.headers.get('content-type') || '').split(';')[0].trim();
       const mime = ct.startsWith('image/') ? ct : (MIME_MAP[path.extname(new URL(raw).pathname).toLowerCase()] || 'image/png');
       const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > MAX_IMAGE_BYTES) throw new Error('图片过大');
       return `data:${mime};base64,${buf.toString('base64')}`;
     } catch (err) {
       // 网络拉取失败时回退为直接 URL 引用
@@ -1073,12 +1255,14 @@ async function resolveWallpaperBgUrl(imagePath) {
     throw new Error(`找不到图片文件: ${imgPath}`);
   }
   const ext = path.extname(imgPath).toLowerCase();
-  const mime = MIME_MAP[ext] || 'image/png';
+  if (!MIME_MAP[ext]) throw new Error(`不支持的图片类型: ${ext || '(无扩展名)'}`);
+  if (fs.statSync(imgPath).size > MAX_IMAGE_BYTES) throw new Error('图片过大 (上限 10MB)');
+  const mime = MIME_MAP[ext];
   const base64 = fs.readFileSync(imgPath).toString('base64');
   return `data:${mime};base64,${base64}`;
 }
 
-async function applyConfig(cfg, logFn = console.log) {
+async function applyConfig(cfg, logFn = console.log, opts = {}) {
   const parts = [];
 
   if (cfg.enableWallpaper) {
@@ -1124,7 +1308,7 @@ async function applyConfig(cfg, logFn = console.log) {
   }
 
   const expression = parts.join('; ');
-  const targets = await ensureCDPReady(logFn);
+  const targets = await ensureCDPReady(logFn, opts.launch !== false);
   const pages = targets.filter(
     (t) => t.type === 'page' && t.webSocketDebuggerUrl && !t.url.startsWith('data:')
   );
@@ -1155,6 +1339,8 @@ async function promptText(question, defaultValue = '') {
 
 async function runTUI() {
   const cfg = loadConfig();
+  const host = await getHostVersion();
+  const hostLabel = host?.version ? `Antigravity ${host.version}` : 'Antigravity (CDP offline)';
   let cursor = 0;
   let statusMsg = t(cfg).hint;
 
@@ -1220,6 +1406,17 @@ async function runTUI() {
         },
       },
       {
+        key: 'statsBarItems',
+        label: `    ${tr.statsBarItems}: ${normalizeStatsBarItems(cfg.statsBarItems).join(', ')}`,
+        needInput: true,
+        action: async () => {
+          const cur = normalizeStatsBarItems(cfg.statsBarItems).join(', ');
+          const val = await promptText(tr.promptStatsItems, cur);
+          cfg.statsBarItems = normalizeStatsBarItems(val.split(','));
+          saveConfig(cfg);
+        },
+      },
+      {
         key: 'apply',
         label: tr.apply,
         action: async () => {
@@ -1243,7 +1440,7 @@ async function runTUI() {
         action: async () => {
           try {
             const count = await applyConfig(
-              { ...cfg, enableWallpaper: false, enableInputStyle: false },
+              { ...cfg, enableWallpaper: false, enableInputStyle: false, enableStatsBar: false, enableEscCancel: false },
               (m) => {
                 statusMsg = m;
                 render();
@@ -1271,7 +1468,7 @@ async function runTUI() {
     const items = getItems();
     process.stdout.write('\x1b[2J\x1b[H');
     console.log(`\x1b[1;36m${tr.title}\x1b[0m`);
-    console.log(`${tr.cdpPort}: ${CDP_PORT}  |  ${tr.configFile}: ${CONFIG_PATH}\n`);
+    console.log(`${hostLabel}  |  ${tr.cdpPort}: ${CDP_PORT}  |  ${tr.configFile}: ${CONFIG_PATH}\n`);
 
     items.forEach((item, idx) => {
       const prefix = idx === cursor ? '\x1b[1;32m❯ ' : '  ';
@@ -1352,10 +1549,10 @@ export function startWatchLoop(intervalMs = 3000) {
       for (const page of pages) {
         const check = await evalOverCDP(
           page.webSocketDebuggerUrl,
-          `Boolean(document.getElementById(${JSON.stringify(WALLPAPER_STYLE_ID)}) || document.getElementById(${JSON.stringify(UI_STYLE_ID)}) || document.getElementById('agy-stats-bar') || window.__agyEscCancelHandler)`
+          `(${currentCfg.enableWallpaper ? '!document.getElementById(' + JSON.stringify(WALLPAPER_STYLE_ID) + ')' : 'false'}) || (${currentCfg.enableInputStyle ? '!document.getElementById(' + JSON.stringify(UI_STYLE_ID) + ')' : 'false'}) || (${currentCfg.enableStatsBar ? '!window.__agyStatsTimer' : 'false'}) || (${currentCfg.enableEscCancel ? '!window.__agyEscCancelHandler' : 'false'})`
         );
-        if (check && check.result && check.result.value === false) {
-          await applyConfig(currentCfg, () => {});
+        if (check && check.result && check.result.value === true) {
+          await applyConfig(currentCfg, () => {}, { launch: false });
           break;
         }
       }
@@ -1408,7 +1605,7 @@ async function runWatchMode() {
   startWatchLoop(3000);
 }
 
-export { loadConfig, saveConfig, applyConfig, ensureStatsServer };
+export { getHostVersion, loadConfig, saveConfig, applyConfig, ensureStatsServer };
 
 // ---------------- 入口 ----------------
 
@@ -1444,13 +1641,17 @@ async function main() {
   }
 
   if (arg1 === '--clear-all') {
-    const count = await applyConfig({ ...cfg, enableWallpaper: false, enableInputStyle: false });
+    const count = await applyConfig({ ...cfg, enableWallpaper: false, enableInputStyle: false, enableStatsBar: false, enableEscCancel: false });
     console.log(`[ok] 已清除所有注入样式，共 ${count} 个窗口`);
     return;
   }
 
   cfg.enableWallpaper = true;
-  cfg.imagePath = path.resolve(arg1);
+  if (arg1.startsWith('-')) {
+    console.error(`[error] 未知参数: ${arg1}\n用法: --apply | --clear | --clear-all | --watch | <图片路径或URL> [透明度]`);
+    process.exit(1);
+  }
+  cfg.imagePath = /^(https?:\/\/|data:image\/)/i.test(arg1) ? arg1 : path.resolve(arg1);
   if (process.argv[3] !== undefined) {
     cfg.opacity = Math.min(1, Math.max(0, Number(process.argv[3])));
   }

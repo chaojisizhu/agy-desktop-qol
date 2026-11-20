@@ -51,10 +51,12 @@ app.api(
 app.api(
   '/api/config',
   async (data) => {
-    const next = { ...loadConfig(), ...data };
+    const allowed = ['lang', 'enableWallpaper', 'imagePath', 'opacity', 'enableInputStyle', 'enableStatsBar', 'enableEscCancel', 'statsClickTarget', 'statsBarItems'];
+    const patch = Object.fromEntries(Object.entries(data || {}).filter(([k]) => allowed.includes(k)));
+    const next = { ...loadConfig(), ...patch };
     saveConfig(next);
     try {
-      const count = await applyConfig(next, () => {});
+      const count = await applyConfig(next, () => {}, { launch: false });
       return { ok: true, count, config: next, daemonOnline: true };
     } catch (err) {
       return {

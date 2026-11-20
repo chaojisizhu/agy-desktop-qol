@@ -530,6 +530,11 @@
         lblStats: 'Bottom Stats Bar',
         subStats: 'Turns/steps, tok/s, cache hit, context & live status',
         lblClickTarget: 'Stats Bar Click Target',
+        lblStatsItems: 'Stats bar items',
+        lblItemStatus: 'Live status',
+        lblItemTurns: 'Turns & speed',
+        lblItemTokens: 'Tokens & cache',
+        lblItemContext: 'Context %',
         saved: 'Applied to Antigravity Desktop',
         cleared: 'Cleared all injections',
         err: 'Failed to load or save config'
@@ -576,7 +581,7 @@
         document.getElementById('enableEscCancel').checked = c.enableEscCancel !== false;
         document.getElementById('enableStatsBar').checked = !!c.enableStatsBar;
         document.getElementById('statsClickTarget').value = c.statsClickTarget ?? 'sidecar__context/context_panel__/';
-        const items = Array.isArray(c.statsBarItems) && c.statsBarItems.length ? c.statsBarItems : ['status', 'turns', 'tokens', 'context'];
+        const items = Array.isArray(c.statsBarItems) ? c.statsBarItems : ['status', 'turns', 'tokens', 'context'];
         document.querySelectorAll('.stats-item-cb').forEach((cb) => {
           cb.checked = items.includes(cb.value);
         });
