@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   applyConfig,
   loadConfig,
+  normalizePort,
   saveConfig,
   startWatchLoop,
 } from '../../agy-desktop-qol.mjs';
@@ -51,8 +52,24 @@ app.api(
 app.api(
   '/api/config',
   async (data) => {
-    const allowed = ['lang', 'enableWallpaper', 'imagePath', 'opacity', 'enableInputStyle', 'enableStatsBar', 'enableEscCancel', 'statsClickTarget', 'statsBarItems'];
+    const allowed = ['lang', 'cdpPort', 'enableWallpaper', 'imagePath', 'opacity', 'enableInputStyle', 'enableStatsBar', 'enableEscCancel', 'statsClickTarget', 'statsBarItems'];
     const patch = Object.fromEntries(Object.entries(data || {}).filter(([k]) => allowed.includes(k)));
+    if ('cdpPort' in patch) {
+      if (patch.cdpPort === '' || patch.cdpPort === null || patch.cdpPort === undefined) {
+        patch.cdpPort = normalizePort(undefined, 9222);
+      } else {
+        const port = Number(patch.cdpPort);
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+          return {
+            ok: false,
+            config: loadConfig(),
+            daemonOnline: true,
+            error: 'CDP port must be an integer between 1 and 65535',
+          };
+        }
+        patch.cdpPort = port;
+      }
+    }
     const next = { ...loadConfig(), ...patch };
     saveConfig(next);
     try {

@@ -28,9 +28,13 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 
-const CDP_PORT = Number(process.env.AGY_CDP_PORT || 9222);
-const STATS_PORT = Number(process.env.AGY_STATS_PORT || 9223);
-const CDP_URL = `http://127.0.0.1:${CDP_PORT}`;
+function normalizePort(val, fallback = 9222) {
+  const n = Number(val);
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : fallback;
+}
+
+const DEFAULT_CDP_PORT = normalizePort(process.env.AGY_CDP_PORT, 9222);
+const PREFERRED_STATS_PORT = Number(process.env.AGY_STATS_PORT || 9223);
 const WALLPAPER_STYLE_ID = 'agy-custom-wallpaper';
 const UI_STYLE_ID = 'agy-clean-ui';
 const STATS_SCRIPT_ID = 'agy-stats-bar-script';
@@ -52,6 +56,7 @@ const DEFAULT_LANG = (process.env.LC_ALL || process.env.LANG || '').toLowerCase(
 
 const DEFAULT_CONFIG = {
   lang: DEFAULT_LANG,
+  cdpPort: DEFAULT_CDP_PORT,
   enableWallpaper: true,
   imagePath: '',
   opacity: 0.12,
@@ -192,9 +197,21 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function getTargets() {
+function getCdpPort(cfg) {
+  return normalizePort(cfg?.cdpPort, DEFAULT_CDP_PORT);
+}
+
+function getCdpUrl(cfgOrPort) {
+  const port =
+    typeof cfgOrPort === 'number'
+      ? normalizePort(cfgOrPort, DEFAULT_CDP_PORT)
+      : getCdpPort(cfgOrPort);
+  return `http://127.0.0.1:${port}`;
+}
+
+async function getTargets(cdpPort = DEFAULT_CDP_PORT) {
   try {
-    const res = await fetch(`${CDP_URL}/json`);
+    const res = await fetch(`${getCdpUrl(cdpPort)}/json`);
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -202,9 +219,10 @@ async function getTargets() {
   }
 }
 
-function launchAntigravity() {
+function launchAntigravity(cdpPort = DEFAULT_CDP_PORT) {
   const platform = os.platform();
-  const args = [`--remote-debugging-port=${CDP_PORT}`];
+  const port = normalizePort(cdpPort, DEFAULT_CDP_PORT);
+  const args = [`--remote-debugging-port=${port}`];
 
   if (platform === 'darwin') {
     spawn('open', ['-a', 'Antigravity', '--args', ...args], {
@@ -230,9 +248,9 @@ function launchAntigravity() {
 }
 
 // 通过 CDP /json/version 的 User-Agent 获取宿主 Antigravity 版本号
-async function getHostVersion() {
+async function getHostVersion(cdpPort = DEFAULT_CDP_PORT) {
   try {
-    const res = await fetch(`${CDP_URL}/json/version`, { signal: AbortSignal.timeout(2000) });
+    const res = await fetch(`${getCdpUrl(cdpPort)}/json/version`, { signal: AbortSignal.timeout(2000) });
     const j = await res.json();
     const m = String(j['User-Agent'] || '').match(/Antigravity\/([\d.]+)/);
     return { version: m ? m[1] : null, chrome: j.Browser || null };
@@ -241,26 +259,27 @@ async function getHostVersion() {
   }
 }
 
-async function ensureCDPReady(logFn = console.log, launch = true) {
-  let targets = await getTargets();
+async function ensureCDPReady(logFn = console.log, launch = true, cdpPort = DEFAULT_CDP_PORT) {
+  const port = normalizePort(cdpPort, DEFAULT_CDP_PORT);
+  let targets = await getTargets(port);
   if (targets) return targets;
   if (!launch) {
-    throw new Error(`未检测到 CDP 端口 ${CDP_PORT}，请以 --remote-debugging-port=${CDP_PORT} 启动 Antigravity`);
+    throw new Error(`未检测到 CDP 端口 ${port}，请以 --remote-debugging-port=${port} 启动 Antigravity`);
   }
 
-  logFn(`[info] 未检测到 CDP 端口 ${CDP_PORT}，正在启动 Antigravity Desktop...`);
-  launchAntigravity();
+  logFn(`[info] 未检测到 CDP 端口 ${port}，正在启动 Antigravity Desktop...`);
+  launchAntigravity(port);
 
   for (let i = 0; i < 30; i++) {
     await sleep(500);
-    targets = await getTargets();
+    targets = await getTargets(port);
     if (targets && targets.some((t) => t.type === 'page' && t.webSocketDebuggerUrl && !t.url.startsWith('data:'))) {
       return targets;
     }
   }
 
   throw new Error(
-    `等待 CDP 端口 ${CDP_PORT} 超时。如果 Antigravity 已在运行，请先完全退出后再运行本脚本。`
+    `等待 CDP 端口 ${port} 超时。如果 Antigravity 已在运行，请先完全退出后再运行本脚本。`
   );
 }
 
@@ -328,7 +347,8 @@ function evalOverCDP(wsUrl, expression) {
   });
 }
 
-let statsServerStarted = false;
+let activeStatsPort = null;
+let statsServerPromise = null;
 
 const TOKEN_PATH = path.join(os.homedir(), '.gemini', 'antigravity', 'qol-stats-token');
 let cachedToken = null;
@@ -485,7 +505,7 @@ const transcriptCache = new Map();
 function newTranscriptState() {
   return {
     offset: 0, turns: 0, steps: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0,
-    lastContextTokens: 0, lastModel: '', modelMs: 0, pendingTs: null, lastStep: null,
+    lastContextTokens: 0, lastModel: '', modelMs: 0, pendingTs: null, pendingOut: 0, tpsOut: 0, tpsMs: 0, lastStep: null,
   };
 }
 
@@ -535,13 +555,26 @@ function readTranscriptIncremental(convId, logPath) {
             st.outputTokens += stepOut;
             st.lastContextTokens = stepIn + stepCache + stepOut;
           }
-          // PLANNER_RESPONSE 的 created_at 是该步开始时间; 生成耗时 = 下一条记录的时间 - 本步时间
-          if (t && st.pendingTs && t > st.pendingTs) {
-            const dt = t - st.pendingTs;
-            if (dt < 120000) st.modelMs += dt;
+          // PLANNER_RESPONSE 的 created_at 是该步开始时间; 紧随其后的工具步骤 (GENERIC) 在生成结束时创建，
+          // 因此 (工具步骤时间 - 本步时间) 即纯生成耗时，不含工具执行时间。
+          // 没有工具调用的最终回复，下一条是用户输入，间隔包含用户思考时间，无法测量，直接跳过。
+          if (t && st.pendingTs && (t > st.pendingTs || obj.type !== 'GENERIC')) {
+            if (obj.type === 'GENERIC' && t > st.pendingTs) {
+              const dt = t - st.pendingTs;
+              if (dt < 120000) {
+                st.modelMs += dt;
+                if (st.pendingOut >= 100) {
+                  st.tpsOut += st.pendingOut;
+                  st.tpsMs += dt;
+                }
+              }
+            }
             st.pendingTs = null;
           }
-          if (t && obj.type === 'PLANNER_RESPONSE' && Number(obj.output_tokens || 0) > 0) st.pendingTs = t;
+          if (t && obj.type === 'PLANNER_RESPONSE' && Number(obj.output_tokens || 0) > 0 && Array.isArray(obj.tool_calls) && obj.tool_calls.length > 0) {
+            st.pendingTs = t;
+            st.pendingOut = Number(obj.output_tokens || 0);
+          }
         } catch {
           // ignore malformed line
         }
@@ -602,21 +635,85 @@ function isKnownProtoVersion() {
 }
 
 const dbLimitCache = new Map();
+const dbTimingCache = new Map();
+
+function getDbFingerprint(dbPath) {
+  try {
+    const a = fs.statSync(dbPath);
+    let w = { mtimeMs: 0, size: 0 };
+    try { w = fs.statSync(dbPath + '-wal'); } catch { /* no wal */ }
+    return `${a.mtimeMs}:${a.size}:${w.mtimeMs}:${w.size}`;
+  } catch {
+    return null;
+  }
+}
+
+function decodeProtoTimestamp(bytes) {
+  if (!(bytes instanceof Uint8Array)) return 0;
+  const d = decodeProto(bytes);
+  const sec = d.get(1)?.[0];
+  const nano = d.get(2)?.[0] || 0;
+  return typeof sec === 'number' && sec > 1700000000 ? sec + nano / 1e9 : 0;
+}
+
+// 从 .db 的 steps.metadata 读取精确流式耗时:
+// f1=请求开始, f6=首token时间(TTFT结束), f7=生成完成, f9.f3=output_tokens
+function readDbTimingStats(convId) {
+  const dbPath = path.join(os.homedir(), '.gemini', 'antigravity', 'conversations', `${convId}.db`);
+  const fp = getDbFingerprint(dbPath);
+  if (!fp || !nodeSqlite) return null;
+  const hit = dbTimingCache.get(convId);
+  if (hit && hit.fp === fp) return hit.val;
+
+  let val = null;
+  let db;
+  try {
+    db = new nodeSqlite.DatabaseSync(dbPath, { readOnly: true });
+    const rows = db.prepare('SELECT metadata FROM steps WHERE step_type = 15 AND status = 3').all();
+    let validSteps = 0;
+    let modelSecTotal = 0;
+    let tpsOut = 0;
+    let tpsSec = 0;
+    for (const row of rows) {
+      if (!(row?.metadata instanceof Uint8Array)) continue;
+      const d = decodeProto(row.metadata);
+      const t1 = decodeProtoTimestamp(d.get(1)?.[0]);
+      const t6 = decodeProtoTimestamp(d.get(6)?.[0]);
+      const t7 = decodeProtoTimestamp(d.get(7)?.[0]);
+      const f9 = d.get(9)?.[0];
+      const out = f9 instanceof Uint8Array ? (decodeProto(f9).get(3)?.[0] || 0) : 0;
+      if (!t1 || !t7 || t7 <= t1 || (t7 - t1) >= 600 || out <= 0 || out >= 1000000) continue;
+      validSteps++;
+      modelSecTotal += (t7 - t1);
+      if (t6 >= t1 && t7 > t6 && (t7 - t6) >= 0.5 && out >= 100) {
+        tpsOut += out;
+        tpsSec += (t7 - t6);
+      }
+    }
+    if (validSteps > 0) {
+      val = {
+        hasData: true,
+        tps: tpsSec > 0 ? Math.round(tpsOut / tpsSec) : 0,
+        modelMs: Math.round(modelSecTotal * 1000),
+      };
+    }
+  } catch {
+    // 数据库被锁或结构变化: 回退到 transcript 估算
+  } finally {
+    try { db?.close(); } catch { /* ignore */ }
+  }
+  dbTimingCache.set(convId, { fp, val });
+  if (dbTimingCache.size > 100) dbTimingCache.delete(dbTimingCache.keys().next().value);
+  return val;
+}
 
 function readDbMaxTokenLimit(convId) {
   refreshHostVersion();
   // 版本匹配: 直接采信; 版本未知/不匹配: 尝试读取，但值必须在合理范围内，否则放弃
   const known = isKnownProtoVersion();
   const dbPath = path.join(os.homedir(), '.gemini', 'antigravity', 'conversations', `${convId}.db`);
-  let fp;
-  try {
-    const a = fs.statSync(dbPath);
-    let w = { mtimeMs: 0, size: 0 };
-    try { w = fs.statSync(dbPath + '-wal'); } catch { /* no wal */ }
-    fp = `${a.mtimeMs}:${a.size}:${w.mtimeMs}:${w.size}`;
-  } catch {
-    return 0;
-  }
+  const fp = getDbFingerprint(dbPath);
+  if (!fp) return 0;
   const hit = dbLimitCache.get(convId);
   if (hit && hit.fp === fp && hit.known === known) return hit.limit;
   let limit = 0;
@@ -658,7 +755,7 @@ function computeConversationStats(convId) {
 
   const st = readTranscriptIncremental(convId, logPath);
   if (!st) return null;
-  const { turns, steps, inputTokens, cacheReadTokens, outputTokens, lastContextTokens, lastModel, modelMs, lastStep } = st;
+  const { turns, steps, inputTokens, cacheReadTokens, outputTokens, lastContextTokens, lastModel, modelMs, lastStep, tpsOut, tpsMs } = st;
 
   // 解析实时 Working 内部状态 (transcript 尾部 + language_server.log)
   let live = { phase: 'idle', elapsedSec: 0, model: lastModel, tools: [], detail: '', recentLogs: [] };
@@ -744,10 +841,12 @@ function computeConversationStats(convId) {
 
   // 与官方 context 插件一致: .db 会话里没有明文 max_token_limit，按模型推断 Antigravity 的默认上限
   const maxContext = inferContextLimit(lastModel, convId);
+  const dbTiming = readDbTimingStats(convId);
   const totalTokens = inputTokens + cacheReadTokens + outputTokens;
   const promptTokens = inputTokens + cacheReadTokens;
   const cacheHitRate = promptTokens > 0 ? Math.round((cacheReadTokens / promptTokens) * 100) : 0;
-  const tps = modelMs > 0 ? Math.round(outputTokens / (modelMs / 1000)) : 0;
+  const tps = dbTiming?.hasData ? dbTiming.tps : (tpsMs > 0 ? Math.round(tpsOut / (tpsMs / 1000)) : 0);
+  const effectiveModelMs = dbTiming?.hasData ? dbTiming.modelMs : modelMs;
   const contextPct = Math.min(100, Math.round((lastContextTokens / maxContext) * 100));
 
   const hasAgyContext = fs.existsSync(
@@ -762,7 +861,7 @@ function computeConversationStats(convId) {
     cacheHitRate,
     tps,
     contextPct,
-    modelSeconds: Math.round(modelMs / 1000),
+    modelSeconds: Math.round(effectiveModelMs / 1000),
     lastContextTokens,
     maxContext,
     hasAgyContext,
@@ -792,35 +891,63 @@ function inferContextLimit(model, convId) {
 }
 
 function ensureStatsServer() {
-  if (statsServerStarted) return;
-  statsServerStarted = true;
-  const server = http.createServer(async (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    const url = new URL(req.url, `http://127.0.0.1:${STATS_PORT}`);
-    if (req.method === 'GET' && url.pathname === '/stats') {
-      getStatsToken();
-      if (url.searchParams.get('t') !== getStatsToken()) {
-        res.statusCode = 403;
-        res.end('{}');
+  if (activeStatsPort !== null) return Promise.resolve(activeStatsPort);
+  if (statsServerPromise) return statsServerPromise;
+
+  statsServerPromise = new Promise((resolve, reject) => {
+    const server = http.createServer(async (req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      const url = new URL(req.url, `http://127.0.0.1:${activeStatsPort || PREFERRED_STATS_PORT}`);
+      if (req.method === 'GET' && url.pathname === '/stats') {
+        getStatsToken();
+        if (url.searchParams.get('t') !== getStatsToken()) {
+          res.statusCode = 403;
+          res.end('{}');
+          return;
+        }
+        const id = url.searchParams.get('id') || '';
+        const data = computeConversationStats(id);
+        res.end(JSON.stringify(data || { turns: 0, steps: 0, totalTokens: 0, outputTokens: 0, cacheHitRate: 0, tps: 0 }));
         return;
       }
-      const id = url.searchParams.get('id') || '';
-      const data = computeConversationStats(id);
-      res.end(JSON.stringify(data || { turns: 0, steps: 0, totalTokens: 0, outputTokens: 0, cacheHitRate: 0, tps: 0 }));
-      return;
-    }
-    res.statusCode = 404;
-    res.end('{}');
-  });
-  server.on('error', (err) => {
-    if (err && err.code === 'EADDRINUSE') {
-      console.error(`[warn] 统计端口 ${STATS_PORT} 已被占用，可能已有另一实例在运行`);
-    } else {
+      res.statusCode = 404;
+      res.end('{}');
+    });
+
+    let triedFallback = false;
+    const onListening = () => {
+      server.off('error', onStartupError);
+      server.on('error', (err) => {
+        console.error('[warn] 统计服务错误:', err && err.message);
+      });
+      const addr = server.address();
+      activeStatsPort = typeof addr === 'object' && addr ? addr.port : PREFERRED_STATS_PORT;
+      resolve(activeStatsPort);
+    };
+
+    const onStartupError = (err) => {
+      if (err && err.code === 'EADDRINUSE' && !triedFallback) {
+        triedFallback = true;
+        console.error(`[info] 统计端口 ${PREFERRED_STATS_PORT} 已被占用，正在分配随机可用端口...`);
+        server.listen(0, '127.0.0.1');
+        return;
+      }
+      statsServerPromise = null;
       console.error('[warn] 统计服务错误:', err && err.message);
-    }
+      reject(err);
+    };
+
+    server.once('listening', onListening);
+    server.on('error', onStartupError);
+    const initialPort =
+      Number.isInteger(PREFERRED_STATS_PORT) && PREFERRED_STATS_PORT >= 0 && PREFERRED_STATS_PORT <= 65535
+        ? PREFERRED_STATS_PORT
+        : 9223;
+    server.listen(initialPort, '127.0.0.1');
   });
-  server.listen(STATS_PORT, '127.0.0.1');
+
+  return statsServerPromise;
 }
 
 function normalizeStatsBarItems(items) {
@@ -830,7 +957,12 @@ function normalizeStatsBarItems(items) {
   return [...new Set(filtered)];
 }
 
-function buildStatsBarInjectJS(lang = 'zh', clickTarget = '', statsBarItems = DEFAULT_CONFIG.statsBarItems) {
+function buildStatsBarInjectJS(
+  lang = 'zh',
+  clickTarget = '',
+  statsBarItems = DEFAULT_CONFIG.statsBarItems,
+  statsPort = activeStatsPort || PREFERRED_STATS_PORT
+) {
   const L = JSON.stringify(I18N[lang === 'en' ? 'en' : 'zh'].bar);
   const CLICK_TARGET = JSON.stringify(String(clickTarget || '').trim());
   const ITEMS = JSON.stringify(normalizeStatsBarItems(statsBarItems));
@@ -981,7 +1113,7 @@ function buildStatsBarInjectJS(lang = 'zh', clickTarget = '', statsBarItems = DE
         return;
       }
       try {
-        const res = await fetch('http://127.0.0.1:${STATS_PORT}/stats?t=${getStatsToken()}&id=' + m[1]);
+        const res = await fetch('http://127.0.0.1:${statsPort}/stats?t=${getStatsToken()}&id=' + m[1]);
         const d = await res.json();
         const pct = d.contextPct ?? 0;
         const r = 5;
@@ -1186,12 +1318,16 @@ function buildEscCancelInjectJS(lang = 'zh') {
 
     window.__agyEscCancelHandler = (e) => {
       if (e.key !== 'Escape' || e.isComposing || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
-      if (document.querySelector('[role="dialog"], [role="menu"], [role="listbox"], [data-radix-popper-content-wrapper]')) {
-        return;
-      }
+      const blocking = [...document.querySelectorAll('[role="dialog"], [role="menu"], [role="listbox"], [data-radix-popper-content-wrapper]')].some((el) => {
+        if ((el.getAttribute('aria-label') || '').startsWith('Typeahead')) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+      });
+      if (blocking) return;
       const composer = document.querySelector('.surface-composer');
       if (!composer) return;
-      const btn = composer.querySelector('button[data-tooltip-id="input-send-button-cancel-tooltip"], button[aria-label^="Cancel"]');
+      const btn = composer.querySelector('button[data-tooltip-id="input-send-button-cancel-tooltip"]') ||
+        [...composer.querySelectorAll('button')].find((b) => /cancel|stop|取消|停止/i.test((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-tooltip-id') || '')));
       if (!btn || btn.disabled) {
         hideToast();
         return;
@@ -1295,8 +1431,8 @@ async function applyConfig(cfg, logFn = console.log, opts = {}) {
   }
 
   if (cfg.enableStatsBar) {
-    ensureStatsServer();
-    parts.push(buildStatsBarInjectJS(cfg.lang, cfg.statsClickTarget, cfg.statsBarItems));
+    const statsPort = await ensureStatsServer();
+    parts.push(buildStatsBarInjectJS(cfg.lang, cfg.statsClickTarget, cfg.statsBarItems, statsPort));
   } else {
     parts.push(buildStatsBarRemoveJS());
   }
@@ -1308,7 +1444,7 @@ async function applyConfig(cfg, logFn = console.log, opts = {}) {
   }
 
   const expression = parts.join('; ');
-  const targets = await ensureCDPReady(logFn, opts.launch !== false);
+  const targets = await ensureCDPReady(logFn, opts.launch !== false, getCdpPort(cfg));
   const pages = targets.filter(
     (t) => t.type === 'page' && t.webSocketDebuggerUrl && !t.url.startsWith('data:')
   );
@@ -1339,7 +1475,7 @@ async function promptText(question, defaultValue = '') {
 
 async function runTUI() {
   const cfg = loadConfig();
-  const host = await getHostVersion();
+  const host = await getHostVersion(getCdpPort(cfg));
   const hostLabel = host?.version ? `Antigravity ${host.version}` : 'Antigravity (CDP offline)';
   let cursor = 0;
   let statusMsg = t(cfg).hint;
@@ -1468,7 +1604,7 @@ async function runTUI() {
     const items = getItems();
     process.stdout.write('\x1b[2J\x1b[H');
     console.log(`\x1b[1;36m${tr.title}\x1b[0m`);
-    console.log(`${hostLabel}  |  ${tr.cdpPort}: ${CDP_PORT}  |  ${tr.configFile}: ${CONFIG_PATH}\n`);
+    console.log(`${hostLabel}  |  ${tr.cdpPort}: ${getCdpPort(cfg)}  |  ${tr.configFile}: ${CONFIG_PATH}\n`);
 
     items.forEach((item, idx) => {
       const prefix = idx === cursor ? '\x1b[1;32m❯ ' : '  ';
@@ -1528,7 +1664,9 @@ async function runTUI() {
 }
 
 export function startWatchLoop(intervalMs = 3000) {
-  ensureStatsServer();
+  ensureStatsServer().catch((err) => {
+    console.error('[warn] 统计服务启动失败:', err && err.message);
+  });
 
   const tick = async () => {
     try {
@@ -1541,7 +1679,7 @@ export function startWatchLoop(intervalMs = 3000) {
       ) {
         return;
       }
-      const targets = await getTargets();
+      const targets = await getTargets(getCdpPort(currentCfg));
       if (!targets) return;
       const pages = targets.filter(
         (t) => t.type === 'page' && t.webSocketDebuggerUrl && !t.url.startsWith('data:')
@@ -1605,7 +1743,7 @@ async function runWatchMode() {
   startWatchLoop(3000);
 }
 
-export { getHostVersion, loadConfig, saveConfig, applyConfig, ensureStatsServer };
+export { getHostVersion, loadConfig, saveConfig, applyConfig, ensureStatsServer, normalizePort, getCdpPort };
 
 // ---------------- 入口 ----------------
 

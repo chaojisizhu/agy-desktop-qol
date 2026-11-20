@@ -240,7 +240,8 @@
     }
 
     /* Inputs */
-    input[type="text"] {
+    input[type="text"],
+    input[type="number"] {
       width: 100%;
       padding: 8px 10px;
       border-radius: 8px;
@@ -252,9 +253,16 @@
       outline: none;
       transition: border-color 0.15s ease, background 0.15s ease;
     }
-    input[type="text"]:focus {
+    input[type="text"]:focus,
+    input[type="number"]:focus {
       border-color: var(--qol-accent);
       background: var(--qol-input-focus-bg);
+    }
+    input[type="number"].port-input {
+      width: 96px;
+      flex-shrink: 0;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
     }
     .opacity-row {
       display: flex;
@@ -453,6 +461,17 @@
       </div>
     </section>
 
+    <div class="section-title" id="secConnection">连接</div>
+    <section class="card">
+      <div class="row">
+        <div>
+          <div class="label" id="lblCdpPort">CDP 端口</div>
+          <div class="sub" id="subCdpPort">Antigravity 远程调试端口（默认 9222）</div>
+        </div>
+        <input type="number" class="port-input" id="cdpPort" min="1" max="65535" step="1" placeholder="9222" />
+      </div>
+    </section>
+
     <div class="status" id="status"></div>
   </main>
 
@@ -509,6 +528,10 @@
         lblItemTurns: '轮次与速度',
         lblItemTokens: 'Token 与缓存',
         lblItemContext: '上下文百分比',
+        secConnection: '连接',
+        lblCdpPort: 'CDP 端口',
+        subCdpPort: 'Antigravity 远程调试端口（默认 9222）',
+        invalidPort: 'CDP 端口必须是 1 ~ 65535 的整数',
         saved: '已应用到 Antigravity Desktop',
         cleared: '已清除所有注入',
         err: '读取或保存配置失败'
@@ -535,6 +558,10 @@
         lblItemTurns: 'Turns & speed',
         lblItemTokens: 'Tokens & cache',
         lblItemContext: 'Context %',
+        secConnection: 'Connection',
+        lblCdpPort: 'CDP Port',
+        subCdpPort: 'Antigravity remote debugging port (default 9222)',
+        invalidPort: 'CDP port must be an integer between 1 and 65535',
         saved: 'Applied to Antigravity Desktop',
         cleared: 'Cleared all injections',
         err: 'Failed to load or save config'
@@ -555,7 +582,7 @@
     const renderLang = () => {
       const tr = TEXT[lang];
       for (const k of Object.keys(tr)) {
-        if (['saved', 'cleared', 'err'].includes(k)) continue;
+        if (['saved', 'cleared', 'err', 'invalidPort'].includes(k)) continue;
         const el = document.getElementById(k);
         if (el) el.textContent = tr[k];
       }
@@ -581,6 +608,7 @@
         document.getElementById('enableEscCancel').checked = c.enableEscCancel !== false;
         document.getElementById('enableStatsBar').checked = !!c.enableStatsBar;
         document.getElementById('statsClickTarget').value = c.statsClickTarget ?? 'sidecar__context/context_panel__/';
+        document.getElementById('cdpPort').value = c.cdpPort ?? 9222;
         const items = Array.isArray(c.statsBarItems) ? c.statsBarItems : ['status', 'turns', 'tokens', 'context'];
         document.querySelectorAll('.stats-item-cb').forEach((cb) => {
           cb.checked = items.includes(cb.value);
@@ -592,8 +620,15 @@
     };
 
     const save = async (override = {}, customOkMsg = '') => {
+      const rawCdpPort = document.getElementById('cdpPort').value.trim();
+      const cdpPort = rawCdpPort === '' ? 9222 : Number(rawCdpPort);
+      if (!Number.isInteger(cdpPort) || cdpPort < 1 || cdpPort > 65535) {
+        showStatus(TEXT[lang].invalidPort, true);
+        return;
+      }
       const body = {
         lang,
+        cdpPort,
         enableWallpaper: document.getElementById('enableWallpaper').checked,
         imagePath: document.getElementById('imagePath').value.trim(),
         opacity: Number(opacityEl.value || 0.12),
