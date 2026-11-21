@@ -165,19 +165,23 @@
       cursor: pointer;
       transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease, opacity 0.15s ease;
     }
-    button:hover {
+    button:hover:not(:disabled) {
       background: var(--qol-btn-hover-bg);
       border-color: var(--qol-border-strong);
     }
-    button:active {
+    button:active:not(:disabled) {
       transform: scale(0.97);
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
     }
     button.primary {
       background: var(--qol-accent);
       border-color: transparent;
       color: var(--qol-accent-fg);
     }
-    button.primary:hover {
+    button.primary:hover:not(:disabled) {
       background: var(--qol-accent-hover);
     }
     button.ghost {
@@ -187,7 +191,7 @@
       padding: 5px 8px;
       font-size: 11px;
     }
-    button.ghost:hover {
+    button.ghost:hover:not(:disabled) {
       color: inherit;
       background: var(--qol-btn-bg);
     }
@@ -383,7 +387,7 @@
       <h2 class="title" id="title">Desktop QoL</h2>
     </div>
     <div class="header-actions">
-      <button class="ghost" id="langBtn" title="Switch Language">EN</button>
+      <button class="ghost" id="langBtn" title="切换语言 / Switch Language">EN</button>
       <button id="clearBtn">清除</button>
       <button class="primary" id="applyBtn">应用</button>
     </div>
@@ -398,14 +402,14 @@
           <div class="sub" id="subWp">作为半透明氛围层覆盖在窗口上</div>
         </div>
         <label class="switch">
-          <input type="checkbox" id="enableWallpaper" />
+          <input type="checkbox" id="enableWallpaper" aria-labelledby="lblWp" />
           <span class="switch-track"></span>
         </label>
       </div>
       <div class="row-stack">
-        <input type="text" id="imagePath" placeholder="/path/to/wallpaper.png 或 https://..." />
+        <input type="text" id="imagePath" aria-labelledby="lblWp" placeholder="/path/to/wallpaper.png 或 https://..." />
         <div class="opacity-row">
-          <span class="sub" id="lblOp" style="margin:0;">背景透明度</span>
+          <label class="sub" id="lblOp" for="opacity" style="margin:0;">背景透明度</label>
           <div class="range-wrap">
             <input type="range" id="opacity" min="0" max="1" step="0.02" value="0.12" />
             <span class="opacity-val" id="opacityVal">0.12</span>
@@ -422,7 +426,7 @@
           <div class="sub" id="subFlat">全局去阴影叠加 + 极简 1px 细边框</div>
         </div>
         <label class="switch">
-          <input type="checkbox" id="enableInputStyle" />
+          <input type="checkbox" id="enableInputStyle" aria-labelledby="lblFlat" />
           <span class="switch-track"></span>
         </label>
       </div>
@@ -432,7 +436,7 @@
           <div class="sub" id="subEsc">生成中连按两次 ESC 快速停止（2 秒内二次确认）</div>
         </div>
         <label class="switch">
-          <input type="checkbox" id="enableEscCancel" />
+          <input type="checkbox" id="enableEscCancel" aria-labelledby="lblEsc" />
           <span class="switch-track"></span>
         </label>
       </div>
@@ -442,12 +446,12 @@
           <div class="sub" id="subStats">轮数/步数、tok/s、缓存命中率、上下文与实时状态</div>
         </div>
         <label class="switch">
-          <input type="checkbox" id="enableStatsBar" />
+          <input type="checkbox" id="enableStatsBar" aria-labelledby="lblStats" />
           <span class="switch-track"></span>
         </label>
       </div>
       <div class="row-stack">
-        <span class="sub" id="lblClickTarget" style="margin:0;">点击状态栏的地址</span>
+        <label class="sub" id="lblClickTarget" for="statsClickTarget" style="margin:0;">点击状态栏的地址</label>
         <input type="text" id="statsClickTarget" placeholder="sidecar__context/context_panel__/" />
       </div>
       <div class="row-stack">
@@ -465,27 +469,46 @@
     <section class="card">
       <div class="row">
         <div>
-          <div class="label" id="lblCdpPort">CDP 端口</div>
+          <label class="label" id="lblCdpPort" for="cdpPort">CDP 端口</label>
           <div class="sub" id="subCdpPort">Antigravity 远程调试端口（默认 9222）</div>
         </div>
         <input type="number" class="port-input" id="cdpPort" min="1" max="65535" step="1" placeholder="9222" />
       </div>
     </section>
 
-    <div class="status" id="status"></div>
+    <div class="status" id="status" role="status" aria-live="polite"></div>
   </main>
 
   <script>
+    const colorCanvas = document.createElement('canvas');
+    colorCanvas.width = 1;
+    colorCanvas.height = 1;
+    const colorCtx = colorCanvas.getContext('2d', { willReadFrequently: true });
+
+    const parseCssColorToRgb = (cssColor) => {
+      if (colorCtx) {
+        colorCtx.clearRect(0, 0, 1, 1);
+        colorCtx.fillStyle = '#f7f7f8';
+        colorCtx.fillStyle = cssColor;
+        colorCtx.fillRect(0, 0, 1, 1);
+        const [r, g, b] = colorCtx.getImageData(0, 0, 1, 1).data;
+        return [r / 255, g / 255, b / 255];
+      }
+      const nums = (cssColor.match(/[\d.]+/g) || []).map(Number);
+      if (nums.length < 3) return null;
+      const scale = cssColor.startsWith('rgb') ? 255 : 1;
+      return nums.slice(0, 3).map((v) => v / scale);
+    };
+
     const syncScheme = () => {
       const probe = document.createElement('span');
       probe.style.cssText = 'position:absolute;visibility:hidden;color:var(--background, #f7f7f8)';
       document.documentElement.appendChild(probe);
       const c = getComputedStyle(probe).color;
       probe.remove();
-      const nums = (c.match(/[\d.]+/g) || []).map(Number);
-      if (nums.length < 3) return;
-      const scale = c.startsWith('color(') ? 1 : 255;
-      const [r, g, b] = nums.slice(0, 3).map((v) => v / scale);
+      const rgb = parseCssColorToRgb(c);
+      if (!rgb) return;
+      const [r, g, b] = rgb;
       const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
       const theme = lum < 0.5 ? 'dark' : 'light';
       if (document.documentElement.dataset.theme !== theme) {
@@ -498,22 +521,28 @@
     syncScheme();
     new MutationObserver(syncScheme).observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ['style'],
+      attributeFilter: ['style', 'class', 'data-theme'],
     });
+    if (window.matchMedia) {
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', syncScheme);
+    }
 
     const apiFetch = (url, opts) => (window.sidecar?.fetch ? window.sidecar.fetch(url, opts) : fetch(url, opts));
     let lang = 'zh';
     let statusTimer = null;
+    let isSaving = false;
 
     const TEXT = {
       zh: {
         title: 'Desktop QoL',
         langBtn: 'EN',
+        langBtnTitle: 'Switch to English',
         applyBtn: '应用',
         clearBtn: '清除',
         secAppearance: '外观',
         lblWp: '注入背景',
         subWp: '作为半透明氛围层覆盖在窗口上',
+        phImagePath: '/path/to/wallpaper.png 或 https://...',
         lblOp: '背景透明度',
         secEnhance: '界面增强',
         lblFlat: '样式扁平化',
@@ -539,11 +568,13 @@
       en: {
         title: 'Desktop QoL',
         langBtn: '中文',
+        langBtnTitle: '切换到中文',
         applyBtn: 'Apply',
         clearBtn: 'Clear',
         secAppearance: 'Appearance',
         lblWp: 'Custom Wallpaper',
         subWp: 'Translucent ambient background layer',
+        phImagePath: '/path/to/wallpaper.png or https://...',
         lblOp: 'Opacity',
         secEnhance: 'Enhancements',
         lblFlat: 'Flat UI Style',
@@ -581,8 +612,11 @@
 
     const renderLang = () => {
       const tr = TEXT[lang];
+      document.documentElement.lang = lang === 'en' ? 'en' : 'zh';
+      document.getElementById('imagePath').placeholder = tr.phImagePath;
+      document.getElementById('langBtn').title = tr.langBtnTitle;
       for (const k of Object.keys(tr)) {
-        if (['saved', 'cleared', 'err', 'invalidPort'].includes(k)) continue;
+        if (['saved', 'cleared', 'err', 'invalidPort', 'phImagePath', 'langBtnTitle'].includes(k)) continue;
         const el = document.getElementById(k);
         if (el) el.textContent = tr[k];
       }
@@ -595,31 +629,42 @@
     };
     opacityEl.addEventListener('input', syncOpacityVal);
 
+    const applyConfigToForm = (c) => {
+      lang = c.lang === 'en' ? 'en' : 'zh';
+      document.getElementById('enableWallpaper').checked = !!c.enableWallpaper;
+      document.getElementById('imagePath').value = c.imagePath || '';
+      opacityEl.value = c.opacity ?? 0.12;
+      syncOpacityVal();
+      document.getElementById('enableInputStyle').checked = !!c.enableInputStyle;
+      document.getElementById('enableEscCancel').checked = c.enableEscCancel !== false;
+      document.getElementById('enableStatsBar').checked = !!c.enableStatsBar;
+      document.getElementById('statsClickTarget').value = c.statsClickTarget ?? 'sidecar__context/context_panel__/';
+      document.getElementById('cdpPort').value = c.cdpPort ?? 9222;
+      const items = Array.isArray(c.statsBarItems) ? c.statsBarItems : ['status', 'turns', 'tokens', 'context'];
+      document.querySelectorAll('.stats-item-cb').forEach((cb) => {
+        cb.checked = items.includes(cb.value);
+      });
+      renderLang();
+    };
+
+    const setSavingState = (busy) => {
+      isSaving = busy;
+      document.getElementById('applyBtn').disabled = busy;
+      document.getElementById('clearBtn').disabled = busy;
+    };
+
     const load = async () => {
       try {
         const res = await apiFetch('/api/config');
         const c = await res.json();
-        lang = c.lang === 'en' ? 'en' : 'zh';
-        document.getElementById('enableWallpaper').checked = !!c.enableWallpaper;
-        document.getElementById('imagePath').value = c.imagePath || '';
-        opacityEl.value = c.opacity ?? 0.12;
-        syncOpacityVal();
-        document.getElementById('enableInputStyle').checked = !!c.enableInputStyle;
-        document.getElementById('enableEscCancel').checked = c.enableEscCancel !== false;
-        document.getElementById('enableStatsBar').checked = !!c.enableStatsBar;
-        document.getElementById('statsClickTarget').value = c.statsClickTarget ?? 'sidecar__context/context_panel__/';
-        document.getElementById('cdpPort').value = c.cdpPort ?? 9222;
-        const items = Array.isArray(c.statsBarItems) ? c.statsBarItems : ['status', 'turns', 'tokens', 'context'];
-        document.querySelectorAll('.stats-item-cb').forEach((cb) => {
-          cb.checked = items.includes(cb.value);
-        });
-        renderLang();
+        applyConfigToForm(c);
       } catch {
         showStatus(TEXT[lang].err, true);
       }
     };
 
     const save = async (override = {}, customOkMsg = '') => {
+      if (isSaving) return;
       const rawCdpPort = document.getElementById('cdpPort').value.trim();
       const cdpPort = rawCdpPort === '' ? 9222 : Number(rawCdpPort);
       if (!Number.isInteger(cdpPort) || cdpPort < 1 || cdpPort > 65535) {
@@ -639,12 +684,16 @@
         statsBarItems: Array.from(document.querySelectorAll('.stats-item-cb:checked')).map((cb) => cb.value),
         ...override
       };
+      setSavingState(true);
       try {
         const res = await (await apiFetch('/api/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body)
         })).json();
+        if (res.config) {
+          applyConfigToForm(res.config);
+        }
         if (res.ok) {
           showStatus(customOkMsg || TEXT[lang].saved, false);
         } else {
@@ -652,20 +701,26 @@
         }
       } catch {
         showStatus(TEXT[lang].err, true);
+      } finally {
+        setSavingState(false);
       }
     };
 
-    document.getElementById('langBtn').onclick = () => {
+    document.getElementById('langBtn').onclick = async () => {
       lang = lang === 'zh' ? 'en' : 'zh';
       renderLang();
-      save();
+      try {
+        await apiFetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lang, langOnly: true })
+        });
+      } catch {
+        // ignore language-only persistence failure
+      }
     };
     document.getElementById('applyBtn').onclick = () => save();
     document.getElementById('clearBtn').onclick = () => {
-      document.getElementById('enableWallpaper').checked = false;
-      document.getElementById('enableInputStyle').checked = false;
-      document.getElementById('enableEscCancel').checked = false;
-      document.getElementById('enableStatsBar').checked = false;
       save(
         { enableWallpaper: false, enableInputStyle: false, enableEscCancel: false, enableStatsBar: false },
         TEXT[lang].cleared

@@ -1,0 +1,16 @@
+{
+  "name": "agy-desktop-qol",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Zero-dependency QoL enhancer for Antigravity Desktop (custom wallpaper, flat UI, session stats bar) via CDP.",
+  "main": "agy-desktop-qol.mjs",
+  "bin": {
+    "agy-desktop-qol": "./agy-desktop-qol.mjs"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

@@ -4,14 +4,25 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   applyConfig,
+  getActiveStatsPort,
   loadConfig,
+  normalizeOpacity,
   normalizePort,
+  normalizeStatsBarItems,
   saveConfig,
   startWatchLoop,
 } from '../../agy-desktop-qol.mjs';
 
 const fallbackSdk = pathToFileURL(
-  path.join(os.homedir(), '.gemini', 'antigravity', 'lib', 'node_modules', 'sidecar_sdk', 'index.mjs')
+  path.join(
+    os.homedir(),
+    '.gemini',
+    'antigravity',
+    'lib',
+    'node_modules',
+    'sidecar_sdk',
+    'index.mjs'
+  )
 ).href;
 
 const { SidecarApp, Response } = await import('sidecar_sdk').catch(() => import(fallbackSdk));
@@ -19,11 +30,14 @@ const { SidecarApp, Response } = await import('sidecar_sdk').catch(() => import(
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const NO_STORE = { 'Cache-Control': 'no-store' };
 
-// 父进程退出时自动清理自身，避免重启 Antigravity 后残留旧进程占用 9223 端口并覆盖注入
+// 父进程退出时自动清理自身，避免重启 Antigravity 后残留旧进程占用端口并覆盖注入
 const parentPid = process.ppid;
 if (parentPid && parentPid > 1) {
   setInterval(() => {
     try {
+      if (process.platform !== 'win32' && process.ppid !== parentPid) {
+        process.exit(0);
+      }
       process.kill(parentPid, 0);
     } catch {
       process.exit(0);
@@ -31,7 +45,7 @@ if (parentPid && parentPid > 1) {
   }, 3000).unref();
 }
 
-// 在 Sidecar 后台进程内直接托管统计服务 (9223) 与 CDP 自动注入守护
+// 在 Sidecar 后台进程内直接托管统计服务与 CDP 自动注入守护
 startWatchLoop(3000);
 
 const app = new SidecarApp();
@@ -45,46 +59,124 @@ app.page('/', () =>
 
 app.api(
   '/api/config',
-  async () => ({ ...loadConfig(), daemonOnline: true }),
+  async () => ({
+    ...loadConfig(),
+    daemonOnline: true,
+    statsPort: getActiveStatsPort(),
+  }),
   'GET'
 );
 
-app.api(
-  '/api/config',
-  async (data) => {
-    const allowed = ['lang', 'cdpPort', 'enableWallpaper', 'imagePath', 'opacity', 'enableInputStyle', 'enableStatsBar', 'enableEscCancel', 'statsClickTarget', 'statsBarItems'];
-    const patch = Object.fromEntries(Object.entries(data || {}).filter(([k]) => allowed.includes(k)));
-    if ('cdpPort' in patch) {
-      if (patch.cdpPort === '' || patch.cdpPort === null || patch.cdpPort === undefined) {
-        patch.cdpPort = normalizePort(undefined, 9222);
-      } else {
-        const port = Number(patch.cdpPort);
-        if (!Number.isInteger(port) || port < 1 || port > 65535) {
-          return {
-            ok: false,
-            config: loadConfig(),
-            daemonOnline: true,
-            error: 'CDP port must be an integer between 1 and 65535',
-          };
-        }
-        patch.cdpPort = port;
+export async function handleConfigUpdate(data) {
+  const current = loadConfig();
+  const allowed = [
+    'lang',
+    'cdpPort',
+    'enableWallpaper',
+    'imagePath',
+    'opacity',
+    'enableInputStyle',
+    'enableStatsBar',
+    'enableEscCancel',
+    'statsClickTarget',
+    'statsBarItems',
+  ];
+  const raw = data && typeof data === 'object' ? data : {};
+  const langOnly = Boolean(raw.langOnly);
+  const patch = Object.fromEntries(
+    Object.entries(raw).filter(([k]) => allowed.includes(k))
+  );
+  const targetLang = patch.lang === 'en' ? 'en' : patch.lang === 'zh' ? 'zh' : current.lang;
+
+  if ('cdpPort' in patch) {
+    if (patch.cdpPort === '' || patch.cdpPort === null || patch.cdpPort === undefined) {
+      patch.cdpPort = normalizePort(undefined, 9222);
+    } else {
+      const port = Number(patch.cdpPort);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        return {
+          ok: false,
+          config: current,
+          daemonOnline: true,
+          statsPort: getActiveStatsPort(),
+          error:
+            targetLang === 'en'
+              ? 'CDP port must be an integer between 1 and 65535'
+              : 'CDP 端口必须是 1 ~ 65535 的整数',
+        };
       }
+      patch.cdpPort = port;
     }
-    const next = { ...loadConfig(), ...patch };
-    saveConfig(next);
+  }
+
+  if ('opacity' in patch) {
+    if (patch.opacity === '' || patch.opacity === null || patch.opacity === undefined) {
+      patch.opacity = 0.12;
+    } else {
+      const op = Number(patch.opacity);
+      if (!Number.isFinite(op) || op < 0 || op > 1) {
+        return {
+          ok: false,
+          config: current,
+          daemonOnline: true,
+          statsPort: getActiveStatsPort(),
+          error:
+            targetLang === 'en'
+              ? 'Opacity must be a number between 0 and 1'
+              : '透明度必须是 0 ~ 1 之间的数字',
+        };
+      }
+      patch.opacity = normalizeOpacity(op, 0.12);
+    }
+  }
+
+  if ('statsBarItems' in patch) {
+    patch.statsBarItems = normalizeStatsBarItems(patch.statsBarItems);
+  }
+
+  const next = saveConfig({ ...current, ...patch });
+
+  if (langOnly) {
     try {
-      const count = await applyConfig(next, () => {}, { launch: false });
-      return { ok: true, count, config: next, daemonOnline: true };
-    } catch (err) {
-      return {
-        ok: false,
-        config: next,
-        daemonOnline: true,
-        error: err.message || String(err),
-      };
+      await applyConfig(next, () => {}, {
+        launch: false,
+        startStatsServer: true,
+        tolerantWallpaper: true,
+      });
+    } catch {
+      // 仅切换面板语言时忽略 CDP 离线或未配置壁纸的错误
     }
-  },
-  'POST'
-);
+    return {
+      ok: true,
+      config: next,
+      daemonOnline: true,
+      statsPort: getActiveStatsPort(),
+    };
+  }
+
+  try {
+    const count = await applyConfig(next, () => {}, {
+      launch: false,
+      startStatsServer: true,
+    });
+    return {
+      ok: true,
+      count,
+      config: next,
+      daemonOnline: true,
+      statsPort: getActiveStatsPort(),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      config: next,
+      daemonOnline: true,
+      statsPort: getActiveStatsPort(),
+      error: err.message || String(err),
+    };
+  }
+}
+
+app.api('/api/config', handleConfigUpdate, 'POST');
 
 app.run();

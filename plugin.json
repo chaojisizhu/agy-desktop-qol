@@ -2,7 +2,7 @@
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "agy-desktop-qol",
   "displayName": "Desktop QoL",
-  "version": "1.0.0",
+  "version": "0.2.0",
   "description": "Zero-dependency QoL enhancer for Antigravity Desktop (custom wallpaper, flat UI, session stats bar) via CDP.",
   "logo": "assets/logo.svg"
 }

@@ -12,25 +12,25 @@
 
 ## ✨ Features
 
-- **🎨 Custom Wallpaper (Local & URL)**: Inject any local image path, `https://` URL, or `data:image/...` as a translucent ambient background layer (`opacity` configurable via slider, default `0.12`). Remote URLs are converted to `base64` on the fly to bypass CSP restrictions.
+- **🎨 Custom Wallpaper (Local & URL)**: Inject any local image path (including `~/...`), `https://` URL, or `data:image/...` as a translucent ambient background layer (`opacity` configurable via slider, default `0.12`, up to `10MB`). Remote URLs are streamed and converted to `base64` on the fly to bypass CSP restrictions.
 - **🪄 Style Flattening**: Globally remove multi-layer `box-shadow` / glow overlays and apply clean `1px` hairline borders.
-- **📊 Session Stats Bar & Live Internal Status**: Centered bottom bar below the composer showing:
+- **📊 Session Stats Bar & Live Internal Status**: Centered bottom bar below the composer (with customizable `status`, `turns`, `tokens`, and `context` items) showing:
   - **Live Fixed-Width Status Slot**: Real-time internal state parsed from `transcript.jsonl` & `language_server.log` without layout shift (`Idle` / `Waiting` / `Streaming` / `Running tool` / `Safety check` / `503 No capacity` / `Retrying` / `Request error`).
   - **Turns, Steps & Speed**: Turns, steps, and average output speed (`tok/s`).
   - **Tokens & Cache Hit**: Total tokens and prompt cache hit rate.
-  - **Context Usage Ring**: Reads local `transcript.jsonl` & `.pbtxt` `max_token_limit`.
+  - **Context Usage Ring**: Reads local SQLite `.db` (Protobuf metadata) or `.pbtxt` `max_token_limit`.
   - **Interactive Hover Popover**: Detailed session metrics, elapsed seconds, active tool names, and 503 / retry diagnostics.
   - **Configurable Click Action**: Click the stats bar to open any Sidecar panel (defaults to `sidecar__context/context_panel__/`) or external URL.
-- **⎋ Double-ESC to Cancel**: Double-press `ESC` while generating (within 2 seconds, with a centered confirmation toast) to stop generation without conflicting with open menus, dialogs, or IME composition.
-- **🎛️ Native Sidecar Settings Panel (`Desktop QoL`)**: Built-in Web UI panel under `⋮ -> Extensions -> Desktop QoL` with toggle switches, opacity slider, bilingual i18n (`中文` / `EN`), and an in-process background daemon (`startWatchLoop`) that hosts the `9223` stats server and auto-injects via CDP on startup.
-- **🖥️ Interactive CLI / TUI**: Also usable standalone via terminal TUI or CLI flags.
+- **⎋ Double-ESC to Cancel**: Double-press `ESC` while generating (within 2 seconds, with a centered confirmation toast) to stop generation without conflicting with key auto-repeat, open menus, dialogs, or IME composition.
+- **🎛️ Native Sidecar Settings Panel (`Desktop QoL`)**: Built-in Web UI panel under `⋮ -> Extensions -> Desktop QoL` with toggle switches, stats bar item checkboxes, custom CDP port configuration, opacity slider, bilingual i18n (`中文` / `EN`), and an in-process background daemon (`startWatchLoop`) that hosts the local stats server (port `9223` with automatic random port fallback if occupied) and auto-injects via CDP.
+- **🖥️ Interactive CLI / TUI**: Also usable standalone via terminal TUI or CLI flags. Configuration persists in `~/.gemini/antigravity/qol-config.json` (with automatic fallback migration from legacy `config.json`).
 
 ---
 
 ## 📦 Requirements
 
-- **Node.js >= 22** (or Antigravity Desktop's built-in runtime when running as a Sidecar plugin; zero `npm install` needed)
-- Launch Antigravity Desktop with `--remote-debugging-port=9222`
+- **Node.js >= 22** (Node >= 22.5 enables built-in `node:sqlite` for exact `.db` streaming timing and context limit reads; zero `npm install` needed)
+- Launch Antigravity Desktop with `--remote-debugging-port=9222` (customizable in the settings panel or via `AGY_CDP_PORT`)
 
 ---
 
@@ -54,8 +54,13 @@ node agy-desktop-qol.mjs
 ### 3. CLI Shortcuts
 ```bash
 node agy-desktop-qol.mjs <image-path-or-url> [opacity]
-node agy-desktop-qol.mjs --apply       # Apply current config.json once via CDP
-node agy-desktop-qol.mjs --watch       # Standalone background auto-inject daemon
-node agy-desktop-qol.mjs --clear       # Clear wallpaper only
-node agy-desktop-qol.mjs --clear-all   # Clear all injected styles
+node agy-desktop-qol.mjs --apply       # Apply current config once via CDP
+node agy-desktop-qol.mjs --watch       # Standalone background auto-inject & stats daemon
+node agy-desktop-qol.mjs --clear       # Clear wallpaper only and persist config
+node agy-desktop-qol.mjs --clear-all   # Clear all injected styles and persist config
+```
+
+### 4. Run Unit Tests
+```bash
+npm test
 ```
